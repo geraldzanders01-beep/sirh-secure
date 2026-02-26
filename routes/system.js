@@ -1,0 +1,922 @@
+const express = require("express");
+const router = express.Router();
+const supabase = require("../supabaseClient");
+const { checkPerm, sendEmailAPI } = require("../utils");
+
+// --- LECTURE DES LOGS ---
+router.all("/read-logs", async (req, res) => {
+  if (!checkPerm(req, "can_see_audit")) {
+    return res.status(403).json({ error: "Accès refusé à l'Audit" });
+  }
+
+  const page = parseInt(req.query.page) || 1;
+  const limit = 20; // On affiche 20 logs par page
+  const offset = (page - 1) * limit;
+
+  try {
+    const { data, error, count } = await supabase
+      .from("logs")
+      .select("*", { count: "exact" }) // Demande le nombre total pour la pagination
+      .order("created_at", { ascending: false }) // Les plus récents en premier
+      .range(offset, offset + limit - 1); // La clé de la pagination
+
+    if (error) throw error;
+
+    return res.json({
+      data: data,
+      meta: {
+        total: count,
+        page: page,
+        last_page: Math.ceil(count / limit),
+      },
+    });
+  } catch (err) {
+    console.error("Erreur read-logs:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// --- GÉNÉRATION DU BADGE HTML ---
+router.all("/badge", async (req, res) => {
+  const { id } = req.query;
+  if (!req.user) return res.status(401).send("Non connecté");
+
+  const isMe = String(req.user.emp_id) === String(id);
+  const canSeeOthers =
+    req.user.permissions && req.user.permissions.can_see_employees;
+
+  if (!isMe && !canSeeOthers) {
+    return res.status(403).send("Accès refusé.");
+  }
+
+  const { data: emp, error } = await supabase
+    .from("employees")
+    .select("*")
+    .eq("id", id)
+    .single();
+  if (error || !emp) return res.status(404).send("Employé non trouvé.");
+
+  // Préparation des variables calculées pour le CSS et les initiales
+  const initials = emp.nom ? emp.nom.substring(0, 2).toUpperCase() : "??";
+  const statusClass =
+    (emp.statut || "").toLowerCase() === "actif" ? "status-actif" : "";
+
+  // Template HTML Original de Make
+  const htmlBadge = `<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Access Card - ${emp.nom}</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;600;800&display=swap');
+        
+        body {
+            margin: 0; padding: 0;
+            background-color: #f3f4f6;
+            font-family: 'Inter', sans-serif;
+            display: flex; justify-content: center; align-items: center;
+            height: 100vh;
+            -webkit-print-color-adjust: exact;
+        }
+
+        .card-container {
+            width: 320px; 
+            min-height: 580px;
+            background: white;
+            border-radius: 24px;
+            overflow: hidden;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.15);
+            position: relative;
+            border: 1px solid #e2e8f0;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header-bg {
+            height: 140px;
+            background: linear-gradient(135deg, #1e293b 0%, #3b82f6 100%);
+            position: relative;
+            flex-shrink: 0;
+        }
+        
+        .company-name {
+            color: white; font-weight: 800; letter-spacing: 2px; padding-top: 20px;
+            font-size: 14px; opacity: 0.9; text-transform: uppercase;
+        }
+
+        .avatar-container {
+            width: 130px; height: 130px; background: white; border-radius: 50%; padding: 5px;
+            margin: -65px auto 15px auto; position: relative;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+            display: flex; align-items: center; justify-content: center;
+            overflow: hidden;
+            flex-shrink: 0;
+            z-index: 10;
+        }
+        
+        .avatar { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; background-color: #f1f5f9; }
+
+        .initials-box {
+            width: 100%; height: 100%; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            background: #1e293b; color: white; font-size: 45px; font-weight: 800;
+        }
+
+        .name { font-size: 20px; font-weight: 800; color: #1e293b; margin: 0 20px; line-height: 1.2; text-transform: uppercase; }
+        .role { color: #3b82f6; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; margin-top: 5px; margin-bottom: 8px; }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 10px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 15px;
+            background: #f1f5f9;
+            color: #64748b;
+            border: 1px solid #e2e8f0;
+        }
+
+        .status-actif {
+            background: #dcfce7;
+            color: #15803d;
+            border: 1px solid #bbf7d0;
+        }
+
+        .divider { height: 2px; width: 40px; background: #e2e8f0; margin: 0 auto 15px auto; }
+
+        .qr-box {
+            background: #f8fafc; border: 1px dashed #cbd5e1;
+            display: inline-block; padding: 8px; border-radius: 12px;
+            margin-bottom: 10px;
+        }
+        
+        .qr-img { width: 110px; height: 110px; display: block; }
+
+        .footer-info { 
+            margin-top: auto; 
+            padding-bottom: 20px; 
+            font-size: 10px; 
+            color: #94a3b8; 
+        }
+        
+        .id-pill {
+            background: #1e293b; color: white; padding: 4px 12px; border-radius: 6px;
+            font-size: 12px; font-weight: bold; display: inline-block; margin-top: 5px; font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="card-container">
+        <div class="header-bg"><div class="company-name">SIRH-SECURE</div></div>
+
+        <div class="avatar-container">
+            <img id="user-photo" src="" class="avatar" style="display:none;">
+            <div id="user-initials" class="initials-box">
+                ${initials}
+            </div>
+        </div>
+
+        <div class="name">${emp.nom}</div>
+        <div class="role">${emp.poste || ""}</div>
+        
+        <div>
+            <span class="status-badge ${statusClass}">
+                ● ${emp.statut || "Actif"}
+            </span>
+        </div>
+
+        <div class="divider"></div>
+
+        <div>
+            <div class="qr-box">
+            <img class="qr-img" src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://sirh-secure-backend.onrender.com/api/gatekeeper?id=${emp.id}">            </div>
+        </div>
+
+        <div class="footer-info">
+            MATRICULE OFFICIEL<br>
+            <div class="id-pill">${emp.matricule}</div>
+        </div>
+    </div>
+
+    <script>
+        (function() {
+            const rawUrl = "${emp.photo_url || ""}";
+            const img = document.getElementById('user-photo');
+            const initials = document.getElementById('user-initials');
+            let finalUrl = "";
+
+            if (rawUrl && rawUrl.includes("drive.google.com")) {
+                const parts = rawUrl.split(/\\/(?:d|open|file\\/d|id=)\\/([a-zA-Z0-9_-]+)/);
+                const fileId = parts[1] || rawUrl.split("id=")[1];
+                if (fileId) {
+                    finalUrl = "https://lh3.googleusercontent.com/d/" + fileId.split('&')[0];
+                }
+            } else if (rawUrl && rawUrl.startsWith("http")) {
+                finalUrl = rawUrl;
+            }
+
+            if (finalUrl) {
+                img.src = finalUrl;
+                img.onload = function() {
+                    img.style.display = "block";
+                    initials.style.display = "none";
+                    setTimeout(() => { window.print(); }, 800);
+                };
+                img.onerror = function() {
+                    img.style.display = "none";
+                    initials.style.display = "flex";
+                    setTimeout(() => { window.print(); }, 800);
+                };
+            } else {
+                setTimeout(() => { window.print(); }, 800);
+            }
+        })();
+    </script>
+
+</body>
+</html>`;
+
+  return res.send(htmlBadge);
+});
+
+//--//
+
+router.all("/gatekeeper", async (req, res) => {
+  const { id, key } = req.query;
+  const SCAN_KEY = "SIGD_SECURE_2025";
+
+  // 1. Récupérer l'employé
+  const { data: emp, error } = await supabase
+    .from("employees")
+    .select("*")
+    .eq("id", id)
+    .single();
+
+  if (error || !emp) return res.status(404).send("Badge invalide ou inconnu.");
+
+  const isSortie = (emp.statut || "").toLowerCase().includes("sortie");
+
+  // --------------------------------------------------------
+  // CAS A : SCAN DEPUIS L'APP (TERMINAL SÉCURISÉ)
+  // --------------------------------------------------------
+  if (key === SCAN_KEY) {
+    if (isSortie) {
+      console.log(`🚫 Accès Refusé (Statut Sortie) : ${emp.nom}`);
+      return res.json({
+        status: "REFUSÉ",
+        nom: `MATRICULE:${emp.id}----NOM:${emp.nom}----STATUT: ACCÈS REFUSÉ (DÉPART DÉFINITIF)`,
+        poste: emp.poste,
+      });
+    }
+
+    console.log(`📱 Accès Autorisé : ${emp.nom}`);
+    return res.json({
+      status: "valid",
+      nom: `MATRICULE:${emp.id}----NOM:${emp.nom}----POSTE :${emp.poste}----NUMERO:${emp.telephone}----ADRESSE:${emp.adresse}---- STATUT:${emp.statut}----DATE SCANNE:${new Date().toLocaleString()}`,
+      poste: emp.poste,
+    });
+  }
+
+  // --------------------------------------------------------
+  // CAS B : SCAN PUBLIC (TÉLÉPHONE EXTERNE)
+  // --------------------------------------------------------
+  else {
+    console.log(`🚨 Scan Public détecté pour : ${emp.nom}`);
+
+    const nowStr = new Date().toLocaleString("fr-FR");
+
+    // --- EMAIL POUR L'ADMIN (LOG DE SÉCURITÉ) ---
+    const adminMail = {
+      from: `"Sécurité SIRH" <${process.env.SMTP_USER}>`,
+      to: "nevillebouchard98@gmail.com",
+      subject: `LOG DE SÉCURITÉ - CONSULTATION DE PROFIL - ${emp.nom}`,
+      text: `LOG DE SÉCURITÉ - CONSULTATION DE PROFIL
+
+Bonjour,
+
+Le profil numérique lié au badge suivant vient d'être consulté via un terminal mobile (hors réseau de pointage officiel)
+
+Détails du badge consulté :
+👤 Employé : ${emp.nom}
+🆔 ID : ${emp.matricule}
+💼 Poste : ${emp.poste}
+📍 Site : Zogbo
+
+Détails de l'accès :
+📅 Date/Heure : ${nowStr}
+🌐 Méthode : Scan QR Code (Portail Public)
+
+Action recommandée :
+Veuillez contacter l'employé pour confirmer la restitution du badge et vérifier si une désactivation temporaire des accès est nécessaire.
+
+Ce message est envoyé pour assurer la traçabilité des consultations d'identité en dehors des terminaux de l'entreprise.`,
+    };
+
+    // --- EMAIL POUR L'EMPLOYÉ ---
+    const employeeMail = {
+      from: `"Service Sécurité - SIRH SECURE" <${process.env.SMTP_USER}>`,
+      to: emp.email,
+      subject: `Votre badge professionnel a été scanné`,
+      text: `SERVICE SÉCURITÉ - SIRH SECURE
+
+Bonjour ${emp.nom},
+
+Nous vous informons que votre badge professionnel (ID: ${emp.id}) a été scanné et signalé comme "Retrouvé" par une tierce personne le ${nowStr}.
+
+Si vous avez toujours votre badge en votre possession :
+Il s'agit probablement d'un test ou d'une erreur. Vous n'avez rien à faire.
+
+Si vous avez perdu votre badge :
+Restez joignable sur votre numéro (${emp.telephone}).
+Une personne de la sécurité ou des RH va vous contacter sous peu.
+
+Présentez-vous à l'accueil de l'agence Zogbo dès que possible.
+
+Ceci est un message pour la protection de vos accès, un message est aussi envoyé aux administrateurs.`,
+    };
+
+    try {
+      await sendEmailAPI(
+        "nevillebouchard98@gmail.com",
+        adminMail.subject,
+        adminMail.text,
+      );
+      await sendEmailAPI(emp.email, employeeMail.subject, employeeMail.text);
+    } catch (e) {
+      console.error("Erreur mails sécurité:", e.message);
+    }
+
+    // Log d'audit
+    await supabase.from("logs").insert([
+      {
+        agent: "PORTAIL_PUBLIC",
+        action: "SCAN_EXTERNE",
+        details: `Badge ${emp.nom} scanné par un tiers.`,
+      },
+    ]);
+
+    // Page HTML de retour (Ton template de validation)
+    return res.send(`<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Validation de Badge - ${emp.nom}</title>
+    <style>
+        :root { --brand-color: #2563eb; --bg-light: #f1f5f9; --text-main: #1e293b; --text-muted: #64748b; }
+        body { font-family: sans-serif; background-color: var(--bg-light); margin: 0; padding: 20px; color: var(--text-main); display: flex; justify-content: center; }
+        .card { max-width: 420px; width: 100%; background: white; border-radius: 24px; box-shadow: 0 15px 35px rgba(0,0,0,0.1); overflow: hidden; border: 1px solid #e2e8f0; }
+        .company-header { background: var(--brand-color); color: white; padding: 20px; text-align: center; font-weight: 800; text-transform: uppercase; }
+        .profile-area { text-align: center; padding: 30px 20px 20px; }
+        .avatar { width: 130px; height: 130px; background: #f8fafc; border-radius: 50%; margin: 0 auto 15px; border: 4px solid white; box-shadow: 0 4px 10px rgba(0,0,0,0.1); overflow: hidden; }
+        .avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .name { font-size: 22px; font-weight: 700; margin: 0; }
+        .info-section { background: #f8fafc; margin: 0 25px 25px; padding: 20px; border-radius: 16px; }
+        .info-row { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 14px; }
+        .lost-found { padding: 20px 25px; border-top: 1px solid #f1f5f9; text-align: center; }
+        .btn { display: block; width: 100%; padding: 14px; border-radius: 12px; text-decoration: none; font-weight: 700; font-size: 14px; margin-bottom: 10px; border: none; }
+        .btn-call { background: var(--brand-color); color: white; }
+        .btn-report { background: #fff1f2; color: #be123c; border: 1px solid #fecdd3; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="company-header">SIRH- SECURE</div>
+    <div class="profile-area">
+        <div class="avatar"><img src="${emp.photo_url || "https://ui-avatars.com/api/?name=" + emp.nom}" alt="Photo"></div>
+        <h1 class="name">${emp.nom}</h1>
+        <div style="color:var(--brand-color); font-weight:600;">${emp.poste}</div>
+    </div>
+    <div class="info-section">
+        <div class="info-row"><span>ID Employé :</span><strong>${emp.id}</strong></div>
+        <div class="info-row"><span>Département :</span><strong>${emp.departement}</strong></div>
+        <div class="info-row"><span>Statut :</span><strong style="color: #059669;">Badge Vérifié ✓</strong></div>
+    </div>
+    <div class="lost-found">
+        <p><strong>Vous avez trouvé ce badge ?</strong><br>Merci de nous contacter pour le restituer.</p>
+        <a href="tel:+2290154978999" class="btn btn-call">📞 Appeler l'entreprise</a>
+        <button class="btn btn-report" onclick="alert('Signalement transmis aux administrateurs.')">⚠️ Signaler comme PERDU</button>
+    </div>
+</div>
+</body>
+</html>`);
+  }
+});
+
+router.all("/read-report", async (req, res) => {
+  const isGlobalMode = req.query.mode === "GLOBAL";
+  const isPersonalMode = req.query.mode === "PERSONAL";
+
+  if (isGlobalMode && !checkPerm(req, "can_see_dashboard")) {
+    return res.status(403).json({ error: "Accès refusé aux rapports globaux" });
+  }
+
+  const { period } = req.query;
+  const now = new Date();
+  const todayStr = now.toISOString().split("T")[0];
+
+  try {
+    // --- ÉTAPE 1 : RÉCUPÉRER LA LISTE DES EMPLOYÉS ATTENDUS ---
+    // On cible les actifs (ceux qui ne sont pas en sortie définitive)
+    let empQuery = supabase
+      .from("employees")
+      .select("id, nom, matricule, departement, hierarchy_path, statut")
+      .not("statut", "ilike", "%sortie%");
+
+    if (isPersonalMode) {
+      empQuery = empQuery.eq("id", req.user.emp_id);
+    } else if (isGlobalMode && !checkPerm(req, "can_see_employees")) {
+      // Logique Manager (Hierarchy/Scope) identique à la version précédente
+      const { data: requester } = await supabase
+        .from("employees")
+        .select("hierarchy_path, management_scope")
+        .eq("id", req.user.emp_id)
+        .single();
+
+      if (requester) {
+        let securityConditions = [];
+        securityConditions.push(
+          `hierarchy_path.eq.${requester.hierarchy_path}`,
+        );
+        securityConditions.push(
+          `hierarchy_path.ilike.${requester.hierarchy_path}/%`,
+        );
+        if (requester.management_scope?.length > 0) {
+          const scopeList = `(${requester.management_scope.map((s) => `"${s}"`).join(",")})`;
+          securityConditions.push(`departement.in.${scopeList}`);
+        }
+        empQuery = empQuery.or(securityConditions.join(","));
+      }
+    }
+
+    const { data: employeesList, error: empErr } = await empQuery;
+    if (empErr) throw empErr;
+
+    // --- ÉTAPE 2 : RÉCUPÉRER LES POINTAGES SUR LA PÉRIODE ---
+    let ptgQuery = supabase.from("pointages").select("*");
+    if (period === "today") {
+      ptgQuery = ptgQuery
+        .gte("heure", `${todayStr}T00:00:00`)
+        .lte("heure", `${todayStr}T23:59:59`);
+    } else {
+      const startOfMonth = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        1,
+      ).toISOString();
+      ptgQuery = ptgQuery.gte("heure", startOfMonth);
+    }
+
+    const { data: pointages, error: ptgErr } = await ptgQuery.order("heure", {
+      ascending: true,
+    });
+    if (ptgErr) throw ptgErr;
+
+    // --- ÉTAPE 3 : CONSTRUCTION DU RENDU ---
+
+    if (period === "today") {
+      const report = employeesList.map((emp) => {
+        const sesPointages = (pointages || []).filter(
+          (p) => p.employee_id === emp.id,
+        );
+        const firstIn = sesPointages.find((p) => p.action === "CLOCK_IN");
+        const lastOut = [...sesPointages]
+          .reverse()
+          .find(
+            (p) =>
+              p.action === "CLOCK_OUT" &&
+              (p.is_final_out === true || p.is_final_out === "true"),
+          );
+
+        let statut = "ABSENT";
+        let arrivee = "--:--";
+        let dureeStr = "0h 00m";
+        let zone = "---";
+
+        if (firstIn) {
+          arrivee = new Date(firstIn.heure).toLocaleTimeString("fr-FR", {
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+          zone = firstIn.zone_detectee || "Bureau";
+
+          // CALCUL DE LA DURÉE (LIVE OU FIXE)
+          const startTime = new Date(firstIn.heure).getTime();
+          // Si déjà parti, on calcule jusqu'à la sortie, sinon jusqu'à MAINTENANT (Live)
+          const endTime = lastOut
+            ? new Date(lastOut.heure).getTime()
+            : now.getTime();
+
+          const diffMs = endTime - startTime;
+          const diffMins = Math.max(0, Math.floor(diffMs / 60000));
+          dureeStr = `${Math.floor(diffMins / 60)}h ${(diffMins % 60).toString().padStart(2, "0")}m`;
+
+          statut = lastOut ? "PARTI" : "PRÉSENT";
+        }
+
+        // Si la personne est en congé déclaré dans le statut
+        if (statut === "ABSENT" && emp.statut.toLowerCase().includes("cong")) {
+          statut = "CONGÉ";
+        }
+
+        return {
+          nom: emp.nom,
+          matricule: emp.matricule,
+          statut: statut,
+          arrivee: arrivee,
+          duree: dureeStr,
+          zone: zone,
+        };
+      });
+
+      // On trie : les présents en haut
+      report.sort((a, b) => (a.statut === "PRÉSENT" ? -1 : 1));
+      return res.json(report);
+    } else {
+      // --- RENDU MENSUEL (Calcul par jour pour cumul fiable) ---
+      const monthlySummary = employeesList.map((emp) => {
+        const sesPointages = (pointages || []).filter(
+          (p) => p.employee_id === emp.id,
+        );
+
+        // On groupe par date
+        const jours = {};
+        sesPointages.forEach((p) => {
+          const d = new Date(p.heure).toISOString().split("T")[0];
+          if (!jours[d]) jours[d] = { firstIn: null, lastOut: null };
+
+          const time = new Date(p.heure).getTime();
+          if (p.action === "CLOCK_IN") {
+            if (!jours[d].firstIn || time < jours[d].firstIn)
+              jours[d].firstIn = time;
+          } else if (
+            p.action === "CLOCK_OUT" &&
+            (p.is_final_out === true || p.is_final_out === "true")
+          ) {
+            if (!jours[d].lastOut || time > jours[d].lastOut)
+              jours[d].lastOut = time;
+          }
+        });
+
+        let totalMs = 0;
+        let nbJours = 0;
+
+        Object.keys(jours).forEach((dateStr) => {
+          const j = jours[dateStr];
+          if (j.firstIn) {
+            nbJours++;
+
+            let finCalcul = j.lastOut;
+
+            // 👇 LA CORRECTION EST ICI :
+            // Si pas de sortie ET que c'est aujourd'hui, on utilise l'heure actuelle
+            if (!finCalcul && dateStr === todayStr) {
+              finCalcul = now.getTime();
+            }
+
+            if (finCalcul && j.firstIn) {
+              const amplitude = finCalcul - j.firstIn;
+              if (amplitude > 0) totalMs += amplitude;
+            }
+          }
+        });
+
+        const totalMinutes = Math.floor(totalMs / 60000);
+        return {
+          mois: now.toLocaleDateString("fr-FR", {
+            month: "long",
+            year: "numeric",
+          }),
+          nom: emp.nom,
+          jours: nbJours,
+          heures: `${Math.floor(totalMinutes / 60)}h ${(totalMinutes % 60).toString().padStart(2, "0")}m`,
+          Statut: "Validé",
+        };
+      });
+
+      return res.json(monthlySummary);
+    }
+  } catch (err) {
+    console.error("Erreur Rapport Impeccable:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// --- FLASH MESSAGES ---
+router.all("/read-flash", async (req, res) => {
+  const now = new Date().toISOString();
+
+  // On récupère uniquement les messages non expirés
+  const { data, error } = await supabase
+    .from("flash_messages")
+    .select("id, message, sender, type, created_at")
+    .gt("date_expiration", now)
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+
+  // On mappe pour que le Frontend reçoive les noms attendus
+  const mapped = data.map((m) => ({
+    Message: m.message,
+    Sender: m.sender,
+    Type: m.type,
+    Date: m.created_at,
+    id: m.id,
+  }));
+
+  return res.json(mapped);
+});
+
+router.all("/write-flash", async (req, res) => {
+  if (!req.user.permissions || !req.user.permissions.can_send_announcements) {
+    return res
+      .status(403)
+      .json({ error: "Accès refusé à la diffusion d'annonces" });
+  }
+
+  const { message, type, sender, date_expiration } = req.body;
+
+  const { error } = await supabase.from("flash_messages").insert([
+    {
+      message,
+      type,
+      sender,
+      date_expiration,
+    },
+  ]);
+
+  if (error) throw error;
+
+  console.log(
+    `📢 Nouvelle annonce de ${sender} : ${message.substring(0, 30)}...`,
+  );
+  return res.json({ status: "success" });
+});
+
+// --- MAINTENANCE ARCHIVES ---
+router.all("/run-archiving-job", async (req, res) => {
+  if (!checkPerm(req, "can_manage_config"))
+    return res.status(403).json({ error: "Droits requis." });
+  const results = { logs_archived: 0, photos_deleted: 0 };
+
+  try {
+    // 1. PURGE DES PHOTOS DE VISITE (> 2 ANS)
+    const twoYearsAgo = new Date();
+    twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 2);
+
+    const { data: toDelete } = await supabase
+      .from("visit_reports")
+      .select("id, proof_url")
+      .lt("check_in_time", twoYearsAgo.toISOString())
+      .not("proof_url", "is", null);
+
+    if (toDelete && toDelete.length > 0) {
+      const filePaths = toDelete
+        .map((v) => v.proof_url.split("/documents/")[1])
+        .filter((p) => p);
+
+      // Suppression physique sur le Storage
+      const { error: storageErr } = await supabase.storage
+        .from("documents")
+        .remove(filePaths);
+
+      if (!storageErr) {
+        // Mise à jour de la DB pour nettoyer les liens morts
+        const ids = toDelete.map((v) => v.id);
+        await supabase
+          .from("visit_reports")
+          .update({ proof_url: null })
+          .in("id", ids);
+        results.photos_deleted = filePaths.length;
+      }
+    }
+
+    // 2. ARCHIVAGE DES LOGS (> 1 AN) vers le schéma archives
+    const oneYearAgo = new Date();
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+    const { data: oldLogs } = await supabase
+      .from("logs")
+      .select("*")
+      .lt("created_at", oneYearAgo.toISOString());
+
+    if (oldLogs && oldLogs.length > 0) {
+      const { error: arcErr } = await supabase
+        .from("logs", { schema: "archives" })
+        .insert(oldLogs);
+      if (!arcErr) {
+        await supabase
+          .from("logs")
+          .delete()
+          .lt("created_at", oneYearAgo.toISOString());
+        results.logs_archived = oldLogs.length;
+      }
+    }
+
+    return res.json({ status: "success", report: results });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// --- SETTINGS & MODULES ---
+router.all("/list-departments", async (req, res) => {
+  const { data, error } = await supabase
+    .from("departments")
+    .select("*")
+    .eq("is_active", true)
+    .order("label", { ascending: true });
+
+  if (error) throw error;
+  return res.json(data);
+});
+
+router.all("/list-roles", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("role_permissions")
+      .select("role_name")
+      .order("role_name", { ascending: true });
+
+    if (error) throw error;
+    return res.json(data);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.all("/read-settings", async (req, res) => {
+  const { data, error } = await supabase
+    .from("app_settings")
+    .select("*")
+    .order("label", { ascending: true });
+
+  if (error) {
+    console.error("❌ Erreur lecture settings:", error.message);
+    throw error;
+  }
+  return res.json(data);
+});
+
+router.all("/read-modules", async (req, res) => {
+  // Public pour les utilisateurs connectés (sert à construire le menu)
+  const { data } = await supabase.from("company_modules").select("*");
+  return res.json(data);
+});
+
+router.all("/get-boss-summary", async (req, res) => {
+  const { month, year } = req.query;
+  const startDate = `${year}-${month}-01`;
+
+  // On récupère les visites de tous les délégués pour le mois
+  const { data, error } = await supabase
+    .from("visit_reports")
+    .select(
+      "*, employees(nom, matricule, poste), mobile_locations(name, zone_name)",
+    )
+    .gte("check_in_time", startDate);
+
+  if (error) throw error;
+
+  // On organise par employé
+  const summary = {};
+  data.forEach((v) => {
+    const e = v.employees;
+    if (!summary[e.nom])
+      summary[e.nom] = {
+        nom: e.nom,
+        matricule: e.matricule,
+        total: 0,
+        details: [],
+      };
+
+    summary[e.nom].total++;
+    summary[e.nom].details.push({
+      lieu: v.mobile_locations.name,
+      zone: v.mobile_locations.zone_name,
+      date: v.check_in_time,
+      resultat: v.outcome,
+      notes: v.notes,
+    });
+  });
+
+  return res.json(Object.values(summary));
+});
+
+router.all("/get-dashboard-stats", async (req, res) => {
+  if (!checkPerm(req, "can_see_dashboard")) {
+    return res.status(403).json({ error: "Accès interdit aux statistiques" });
+  }
+
+  try {
+    const today = new Date().toISOString().split("T")[0];
+    const currentUserId = req.user.emp_id;
+
+    // Calcul de la date d'alerte pour les contrats (Aujourd'hui + 15 jours)
+    const dateAlerteArr = new Date();
+    dateAlerteArr.setDate(dateAlerteArr.getDate() + 15);
+    const alertLimitStr = dateAlerteArr.toISOString().split("T")[0];
+
+    // --- 1. RÉCUPÉRATION DU PÉRIMÈTRE ---
+    const { data: requester } = await supabase
+      .from("employees")
+      .select("hierarchy_path, management_scope")
+      .eq("id", currentUserId)
+      .single();
+
+    let query = supabase
+      .from("employees")
+      .select("id, statut, departement, hierarchy_path, date_fin_contrat");
+
+    // --- 2. FILTRE DE SÉCURITÉ ---
+    if (!checkPerm(req, "can_see_employees")) {
+      if (req.user.role === "MANAGER" && requester) {
+        let conditions = [];
+        conditions.push(`hierarchy_path.eq.${requester.hierarchy_path}`);
+        conditions.push(`hierarchy_path.ilike.${requester.hierarchy_path}/%`);
+
+        if (requester.management_scope?.length > 0) {
+          const scopeList = `(${requester.management_scope.map((s) => `"${s}"`).join(",")})`;
+          conditions.push(`departement.in.${scopeList}`);
+        }
+        query = query.or(conditions.join(","));
+      } else {
+        query = query.eq("id", currentUserId);
+      }
+    }
+
+    const { data: employeesList, error: errEmp } = await query;
+    if (errEmp) throw errEmp;
+
+    // --- 3. GESTION DES CONGÉS ACTIFS ---
+    const allowedIds = employeesList.map((e) => e.id);
+
+    const { data: activeLeaves } = await supabase
+      .from("conges")
+      .select("employee_id")
+      .eq("statut", "Validé")
+      .lte("date_debut", today)
+      .gte("date_fin", today)
+      .in("employee_id", allowedIds);
+
+    const idsEnCongePlanifie = new Set(
+      (activeLeaves || []).map((l) => l.employee_id),
+    );
+
+    // --- 4. NOUVEAU : COMPTEURS GLOBAUX POUR LES SIGNAUX ---
+
+    // A. Compter les congés en attente dans tout le périmètre
+    const { count: pendingCount } = await supabase
+      .from("conges")
+      .select("*", { count: "exact", head: true })
+      .in("employee_id", allowedIds)
+      .eq("statut", "En attente");
+
+    // B. Compter les contrats finissant dans les 15 jours dans tout le périmètre
+    // On filtre manuellement sur la liste déjà récupérée pour économiser une requête
+    const contractAlerts = employeesList.filter(
+      (e) =>
+        e.date_fin_contrat &&
+        e.date_fin_contrat >= today &&
+        e.date_fin_contrat <= alertLimitStr &&
+        !e.statut.toLowerCase().includes("sortie"),
+    ).length;
+
+    // --- 5. CALCUL DES STATISTIQUES (Basé sur la liste complète autorisée) ---
+    const stats = {
+      total: employeesList.length,
+      actifs: 0,
+      sortis: 0,
+      enConge: 0,
+      depts: {},
+      // Ajout des données pour les signaux
+      alertConges: pendingCount || 0,
+      alertContrats: contractAlerts || 0,
+    };
+
+    employeesList.forEach((emp) => {
+      const s = (emp.statut || "Actif").toLowerCase().trim();
+
+      if (s === "sortie") {
+        stats.sortis++;
+      } else if (s.includes("cong") || idsEnCongePlanifie.has(emp.id)) {
+        stats.enConge++;
+      } else {
+        stats.actifs++;
+      }
+
+      const d = emp.departement || "Non défini";
+      stats.depts[d] = (stats.depts[d] || 0) + 1;
+    });
+
+    return res.json(stats);
+  } catch (err) {
+    console.error("Erreur stats filtrées:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+module.exports = router;
