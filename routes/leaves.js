@@ -13,7 +13,8 @@ router.all("/leave", async (req, res) => {
   const b = req.body;
   let justifUrl = null;
 
-    const justifFile = (req.files ||  if (justifFile) {
+  const justifFile = (req.files ||  
+  if (justifFile) {
     const fileName = `justif_${Date.now()}_${justifFile.originalname}`;
     await supabase.storage
       .from("documents")
