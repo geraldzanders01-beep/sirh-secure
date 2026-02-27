@@ -658,10 +658,13 @@ router.all("/write-flash", async (req, res) => {
 });
 
 // --- MAINTENANCE ARCHIVES ---
+// --- MAINTENANCE ARCHIVES ---
 router.all("/run-archiving-job", async (req, res) => {
   if (!checkPerm(req, "can_manage_config"))
     return res.status(403).json({ error: "Droits requis." });
-  const results = { logs_archived: 0, photos_deleted: 0 };
+
+  // On initialise les compteurs à 0
+  const results = { logs_archived: 0, photos_deleted: 0, employees: 0 };
 
   try {
     // 1. PURGE DES PHOTOS DE VISITE (> 2 ANS)
@@ -685,7 +688,6 @@ router.all("/run-archiving-job", async (req, res) => {
         .remove(filePaths);
 
       if (!storageErr) {
-        // Mise à jour de la DB pour nettoyer les liens morts
         const ids = toDelete.map((v) => v.id);
         await supabase
           .from("visit_reports")
@@ -695,7 +697,7 @@ router.all("/run-archiving-job", async (req, res) => {
       }
     }
 
-    // 2. ARCHIVAGE DES LOGS (> 1 AN) vers le schéma archives
+    // 2. ARCHIVAGE DES LOGS (> 1 AN)
     const oneYearAgo = new Date();
     oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
     const { data: oldLogs } = await supabase
@@ -707,6 +709,7 @@ router.all("/run-archiving-job", async (req, res) => {
       const { error: arcErr } = await supabase
         .from("logs", { schema: "archives" })
         .insert(oldLogs);
+      
       if (!arcErr) {
         await supabase
           .from("logs")
@@ -716,8 +719,47 @@ router.all("/run-archiving-job", async (req, res) => {
       }
     }
 
+    // ============================================================
+    // 3. ARCHIVAGE DES EMPLOYÉS "SORTIE" (NOUVEAU ✅)
+    // ============================================================
+    // On cherche les employés marqués "Sortie"
+    const { data: exitedEmployees } = await supabase
+      .from("employees")
+      .select("*")
+      .ilike("statut", "%Sortie%"); // Recherche insensible à la casse
+
+    if (exitedEmployees && exitedEmployees.length > 0) {
+      // A. On tente de les insérer dans la table d'archive
+      // ATTENTION : La table "employees" doit exister dans le schéma "archives" de Supabase
+      const { error: empArcErr } = await supabase
+        .from("employees", { schema: "archives" })
+        .insert(exitedEmployees);
+
+      // B. Si la copie a marché, on les supprime de la table principale
+      if (!empArcErr) {
+        const idsToDelete = exitedEmployees.map(e => e.id);
+        
+        await supabase
+          .from("employees")
+          .delete()
+          .in("id", idsToDelete);
+          
+        // On supprime aussi leur accès utilisateur pour être sûr
+        const userIds = exitedEmployees.map(e => e.user_associated_id).filter(id => id);
+        if (userIds.length > 0) {
+            await supabase.from("app_users").delete().in("id", userIds);
+        }
+
+        results.employees = exitedEmployees.length; // On met à jour le chiffre
+      } else {
+        console.warn("Archivage employés impossible (Table manquante ?) :", empArcErr.message);
+      }
+    }
+
     return res.json({ status: "success", report: results });
+
   } catch (err) {
+    console.error("Erreur Maintenance:", err);
     return res.status(500).json({ error: err.message });
   }
 });
