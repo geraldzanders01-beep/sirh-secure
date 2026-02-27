@@ -408,161 +408,164 @@ Ceci est un message pour la protection de vos accès, un message est aussi envoy
 });
 
 
+
 // ============================================================
-        // 10. GÉNÉRATEUR DE RAPPORTS (RECALCUL INTELLIGENT & AUTO-CLOSE)
+// 10. GÉNÉRATEUR DE RAPPORTS (RECALCUL INTELLIGENT & AUTO-CLOSE)
 // ============================================================
 router.all("/read-report", async (req, res) => {
-            const isGlobalMode = req.query.mode === 'GLOBAL';
-            const isPersonalMode = req.query.mode === 'PERSONAL';
-            const { period } = req.query;
-            const now = new Date();
-            const todayStr = now.toISOString().split('T')[0];
+    const isGlobalMode = req.query.mode === 'GLOBAL';
+    const isPersonalMode = req.query.mode === 'PERSONAL';
+    const { period } = req.query;
+    const now = new Date();
+    const todayStr = now.toISOString().split('T')[0];
 
-            if (isGlobalMode && !checkPerm(req, 'can_see_dashboard')) {
-                return res.status(403).json({ error: "Accès refusé" });
-            }
+    // Sécurité : Seul le manager/admin voit le global
+    if (isGlobalMode && !checkPerm(req, 'can_see_dashboard')) {
+        return res.status(403).json({ error: "Accès refusé" });
+    }
 
-            try {
-                // 1. RÉCUPÉRATION DES DONNÉES DE BASE
-                let query = supabase
-                    .from('pointages')
-                    .select('*, employees!inner(nom, matricule, hierarchy_path, departement, employee_type)');
+    try {
+        // 1. RÉCUPÉRATION DES DONNÉES DE BASE
+        let query = supabase
+            .from('pointages')
+            .select('*, employees!inner(nom, matricule, hierarchy_path, departement, employee_type)');
 
-                // Filtre Sécurité (Qui a le droit de voir quoi)
-                if (isPersonalMode) {
-                    query = query.eq('employee_id', req.user.emp_id);
-                } 
-                else if (isGlobalMode && !checkPerm(req, 'can_see_employees')) {
-                    const { data: reqData } = await supabase.from('employees').select('hierarchy_path, management_scope').eq('id', req.user.emp_id).single();
-                    if (reqData) {
-                        let filterCond = [`employees.hierarchy_path.ilike.${reqData.hierarchy_path}/%`];
-                        if (reqData.management_scope?.length > 0) {
-                            const scopeList = `(${reqData.management_scope.map(s => `"${s}"`).join(',')})`;
-                            filterCond.push(`employees.departement.in.${scopeList}`);
-                        }
-                        query = query.or(filterCond.join(','));
-                    }
+        // Filtre de Sécurité (Périmètre manager)
+        if (isPersonalMode) {
+            query = query.eq('employee_id', req.user.emp_id);
+        } 
+        else if (isGlobalMode && !checkPerm(req, 'can_see_employees')) {
+            const { data: reqData } = await supabase.from('employees').select('hierarchy_path, management_scope').eq('id', req.user.emp_id).single();
+            if (reqData) {
+                let filterCond = [`employees.hierarchy_path.ilike.${reqData.hierarchy_path}/%`];
+                if (reqData.management_scope?.length > 0) {
+                    const scopeList = `(${reqData.management_scope.map(s => `"${s}"`).join(',')})`;
+                    filterCond.push(`employees.departement.in.${scopeList}`);
                 }
-
-                // Filtre de Période
-                if (period === 'today') {
-                    query = query.gte('heure', `${todayStr}T00:00:00`).lte('heure', `${todayStr}T23:59:59`);
-                } else {
-                    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-                    query = query.gte('heure', startOfMonth);
-                }
-
-                // Important : On trie par heure pour reconstruire la timeline
-                const { data: pointages, error } = await query.order('heure', { ascending: true });
-                if (error) throw error;
-
-                // --- TRAITEMENT DU MODE AUJOURD'HUI (PRÉSENCES LIVE) ---
-                if (period === 'today') {
-                    const latestByEmp = {};
-                    (pointages || []).forEach(p => {
-                        latestByEmp[p.employee_id] = p; // On garde le dernier état
-                    });
-
-                    const report = Object.values(latestByEmp).map(p => {
-                        const isCurrentlyIn = (p.action === 'CLOCK_IN');
-                        let dureeDisplay = "0h 00m";
-                        
-                        if (isCurrentlyIn) {
-                            const diffMins = Math.floor((now - new Date(p.heure)) / 60000);
-                            dureeDisplay = `${Math.floor(diffMins / 60)}h ${(diffMins % 60).toString().padStart(2, '0')}m`;
-                        }
-
-                        return {
-                            nom: p.employees.nom,
-                            matricule: p.employees.matricule,
-                            statut: isCurrentlyIn ? "PRÉSENT" : "PARTI",
-                            arrivee: new Date(p.heure).toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'}),
-                            zone: p.zone_detectee || "Terrain",
-                            duree: dureeDisplay
-                        };
-                    });
-                    return res.json(report);
-                } 
-                
-                // --- TRAITEMENT DU MODE MENSUEL (CUMUL INTELLIGENT) ---
-                else {
-                    const monthlyStats = {};
-                    const pointsByEmp = {};
-
-                    // Groupement initial
-                    pointages.forEach(p => {
-                        if (!pointsByEmp[p.employee_id]) pointsByEmp[p.employee_id] = [];
-                        pointsByEmp[p.employee_id].push(p);
-                    });
-
-                    for (const empId in pointsByEmp) {
-                        const events = pointsByEmp[empId];
-                        const empInfo = events[0].employees;
-                        const isSecurity = (empInfo.employee_type === 'FIXED' || empInfo.employee_type === 'SECURITY');
-                        
-                        if (!monthlyStats[empId]) {
-                            monthlyStats[empId] = { nom: empInfo.nom, totalMs: 0, joursPresence: new Set() };
-                        }
-
-                        let pendingInTime = null;
-
-                        events.forEach(ev => {
-                            const evTime = new Date(ev.heure).getTime();
-                            const evDateStr = new Date(ev.heure).toLocaleDateString();
-
-                            if (ev.action === 'CLOCK_IN') {
-                                // S'il y avait déjà un IN sans OUT (Oubli du pointage précédent)
-                                if (pendingInTime !== null) {
-                                    monthlyStats[empId].totalMs += (calculateAutoClose(pendingInTime, isSecurity) - pendingInTime);
-                                }
-                                pendingInTime = evTime;
-                                monthlyStats[empId].joursPresence.add(evDateStr);
-                            } 
-                            else if (ev.action === 'CLOCK_OUT') {
-                                if (pendingInTime !== null) {
-                                    // Match parfait IN -> OUT
-                                    monthlyStats[empId].totalMs += (evTime - pendingInTime);
-                                    pendingInTime = null;
-                                }
-                            }
-                        });
-
-                        // --- GESTION DE LA FIN DE TIMELINE (Le pointage actuel) ---
-                        if (pendingInTime !== null) {
-                            const lastInDate = new Date(pendingInTime).toLocaleDateString();
-                            const isStillToday = (lastInDate === now.toLocaleDateString());
-
-                            if (isStillToday) {
-                                // 🟢 CALCUL LIVE : Il est au travail en ce moment
-                                monthlyStats[empId].totalMs += (now.getTime() - pendingInTime);
-                            } else {
-                                // 🔴 OUBLI PASSÉ : On ferme selon la règle
-                                monthlyStats[empId].totalMs += (calculateAutoClose(pendingInTime, isSecurity) - pendingInTime);
-                            }
-                        }
-                    }
-
-                    // Formatage final pour le tableau
-                    const finalReport = Object.values(monthlyStats).map(s => {
-                        const totalMins = Math.floor(s.totalMs / 60000);
-                        const hh = Math.floor(totalMins / 60);
-                        const mm = totalMins % 60;
-                        return {
-                            mois: now.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }),
-                            nom: s.nom,
-                            jours: s.joursPresence.size,
-                            heures: `${hh}h ${mm.toString().padStart(2, '0')}m`,
-                            statut: "Validé"
-                        };
-                    });
-
-                    return res.json(finalReport);
-                }
-            } catch (err) {
-                console.error("Erreur Moteur Rapport:", err.message);
-                return res.status(500).json({ error: err.message });
+                query = query.or(filterCond.join(','));
             }
         }
+
+        // Filtre de Période (Aujourd'hui vs Mois)
+        if (period === 'today') {
+            query = query.gte('heure', `${todayStr}T00:00:00`).lte('heure', `${todayStr}T23:59:59`);
+        } else {
+            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+            query = query.gte('heure', startOfMonth);
+        }
+
+        // Chronologie obligatoire pour reconstruire les temps de présence
+        const { data: pointages, error } = await query.order('heure', { ascending: true });
+        if (error) throw error;
+
+        // --- CAS A : MODE AUJOURD'HUI (PRÉSENCES LIVE) ---
+        if (period === 'today') {
+            const latestByEmp = {};
+            (pointages || []).forEach(p => {
+                latestByEmp[p.employee_id] = p; // On retient le dernier état connu
+            });
+
+            const report = Object.values(latestByEmp).map(p => {
+                const isCurrentlyIn = (p.action === 'CLOCK_IN');
+                let dureeDisplay = "0h 00m";
+                
+                if (isCurrentlyIn) {
+                    const diffMins = Math.floor((now - new Date(p.heure)) / 60000);
+                    dureeDisplay = `${Math.floor(diffMins / 60)}h ${(diffMins % 60).toString().padStart(2, '0')}m`;
+                }
+
+                return {
+                    nom: p.employees.nom,
+                    matricule: p.employees.matricule,
+                    statut: isCurrentlyIn ? "PRÉSENT" : "PARTI",
+                    arrivee: new Date(p.heure).toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'}),
+                    zone: p.zone_detectee || "Terrain",
+                    duree: dureeDisplay
+                };
+            });
+            return res.json(report);
+        } 
+        
+        // --- CAS B : MODE MENSUEL (CUMUL INTELLIGENT AVEC AUTO-CLOSE) ---
+        else {
+            const monthlyStats = {};
+            const pointsByEmp = {};
+
+            // 1. Groupement par employé
+            pointages.forEach(p => {
+                if (!pointsByEmp[p.employee_id]) pointsByEmp[p.employee_id] = [];
+                pointsByEmp[p.employee_id].push(p);
+            });
+
+            // 2. Calcul du cumul pour chaque employé
+            for (const empId in pointsByEmp) {
+                const events = pointsByEmp[empId];
+                const empInfo = events[0].employees;
+                // Détection du type pour la règle d'auto-clôture
+                const isSecurity = (empInfo.employee_type === 'FIXED' || empInfo.employee_type === 'SECURITY');
+                
+                if (!monthlyStats[empId]) {
+                    monthlyStats[empId] = { nom: empInfo.nom, totalMs: 0, joursPresence: new Set() };
+                }
+
+                let pendingInTime = null;
+
+                events.forEach(ev => {
+                    const evTime = new Date(ev.heure).getTime();
+                    const evDateStr = new Date(ev.heure).toLocaleDateString();
+
+                    if (ev.action === 'CLOCK_IN') {
+                        // Cas d'un double IN (oubli de sortie précédente) : On ferme l'ancien avant d'ouvrir le nouveau
+                        if (pendingInTime !== null) {
+                            monthlyStats[empId].totalMs += (calculateAutoClose(pendingInTime, isSecurity) - pendingInTime);
+                        }
+                        pendingInTime = evTime;
+                        monthlyStats[empId].joursPresence.add(evDateStr);
+                    } 
+                    else if (ev.action === 'CLOCK_OUT') {
+                        if (pendingInTime !== null) {
+                            // Sortie normale : on calcule la durée réelle
+                            monthlyStats[empId].totalMs += (evTime - pendingInTime);
+                            pendingInTime = null;
+                        }
+                    }
+                });
+
+                // Gestion des sessions restées ouvertes (Pas de OUT final)
+                if (pendingInTime !== null) {
+                    const lastInDate = new Date(pendingInTime).toLocaleDateString();
+                    if (lastInDate === now.toLocaleDateString()) {
+                        // C'est aujourd'hui : on compte jusqu'à maintenant (Live)
+                        monthlyStats[empId].totalMs += (now.getTime() - pendingInTime);
+                    } else {
+                        // C'était un autre jour : on applique la règle de clôture forcée
+                        monthlyStats[empId].totalMs += (calculateAutoClose(pendingInTime, isSecurity) - pendingInTime);
+                    }
+                }
+            } // Fin de la boucle for (empId)
+
+            // 3. Formatage final pour le frontend
+            const finalReport = Object.values(monthlyStats).map(s => {
+                const totalMins = Math.floor(s.totalMs / 60000);
+                const hh = Math.floor(totalMins / 60);
+                const mm = totalMins % 60;
+                return {
+                    mois: now.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }),
+                    nom: s.nom,
+                    jours: s.joursPresence.size,
+                    heures: `${hh}h ${mm.toString().padStart(2, '0')}m`,
+                    statut: "Validé"
+                };
+            });
+
+            return res.json(finalReport);
+        }
+    } catch (err) {
+        console.error("Erreur Moteur Rapport:", err.message);
+        return res.status(500).json({ error: err.message });
+    }
+});
+
 
 
 
