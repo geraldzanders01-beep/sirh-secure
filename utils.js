@@ -45,6 +45,24 @@ function checkPerm(req, permissionName) {
   );
 }
 
+
+        // --- FONCTION PRIVÉE DE CLÔTURE AUTOMATIQUE (INTELLIGENCE MÉTIER) ---
+function calculateAutoClose(startMs, isSecurity) {
+            const startDate = new Date(startMs);
+            if (isSecurity) {
+                // Pour la sécurité/nuit : Forfait de 12 heures de garde
+                return startMs + (12 * 60 * 60 * 1000);
+            } else {
+                // Pour bureau/mobile : Clôture à 18h00 le jour même
+                const eighteenHour = new Date(startDate);
+                eighteenHour.setHours(18, 0, 0, 0);
+                
+                // Si l'entrée était déjà après 18h, on accorde 1h symbolique, sinon 18h
+                return (startDate.getTime() >= eighteenHour.getTime()) 
+                    ? startDate.getTime() + (60 * 60 * 1000) 
+                    : eighteenHour.getTime();
+            }
+        }
 // Fonction utilitaire pour calculer la distance (Formule de Haversine)
 function getDistanceInMeters(lat1, lon1, lat2, lon2) {
   const R = 6371e3; // Rayon de la terre en mètres
@@ -104,4 +122,5 @@ module.exports = {
   getDistanceInMeters,
   sendEmailAPI,
   isModuleActive,
+  calculateAutoClose
 };
