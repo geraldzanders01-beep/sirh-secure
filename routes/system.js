@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const supabase = require("../supabaseClient");
-const { checkPerm, sendEmailAPI } = require("../utils");
+const { checkPerm, sendEmailAPI, calculateAutoClose } = require("../utils");
 
 // --- LECTURE DES LOGS ---
 router.all("/read-logs", async (req, res) => {
@@ -919,6 +919,28 @@ router.all("/get-dashboard-stats", async (req, res) => {
     console.error("Erreur stats filtrées:", err.message);
     return res.status(500).json({ error: err.message });
   }
+});
+
+
+// Route pour simuler/vérifier l'heure de clôture (Test)
+router.all("/check-closing-time", async (req, res) => {
+    // On reçoit l'heure d'entrée et le type (Security ou non)
+    const { startTime, isSecurity } = req.body;
+
+    if (!startTime) return res.status(400).json({ error: "Date début manquante" });
+
+    // On utilise ta fonction
+    const startMs = new Date(startTime).getTime();
+    const closingMs = calculateAutoClose(startMs, isSecurity === true || isSecurity === 'true');
+    
+    const closingDate = new Date(closingMs);
+
+    return res.json({
+        status: "success",
+        entree: new Date(startMs).toLocaleString('fr-FR'),
+        type: isSecurity ? "Sécurité (12h)" : "Bureau/Mobile (18h)",
+        cloture_prevue: closingDate.toLocaleString('fr-FR')
+    });
 });
 
 module.exports = router;
