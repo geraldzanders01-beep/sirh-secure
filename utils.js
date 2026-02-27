@@ -46,8 +46,8 @@ function checkPerm(req, permissionName) {
 }
 
 
-        // --- FONCTION PRIVÉE DE CLÔTURE AUTOMATIQUE (INTELLIGENCE MÉTIER) ---
-function calculateAutoClose(startMs, isSecurity) {
+
+  function calculateAutoClose(startMs, isSecurity) {
             const startDate = new Date(startMs);
             if (isSecurity) {
                 // Pour la sécurité/nuit : Forfait de 12 heures de garde
@@ -62,7 +62,13 @@ function calculateAutoClose(startMs, isSecurity) {
                     ? startDate.getTime() + (60 * 60 * 1000) 
                     : eighteenHour.getTime();
             }
-        }
+        }  
+
+
+
+
+
+
 // Fonction utilitaire pour calculer la distance (Formule de Haversine)
 function getDistanceInMeters(lat1, lon1, lat2, lon2) {
   const R = 6371e3; // Rayon de la terre en mètres
