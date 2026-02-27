@@ -8,19 +8,22 @@ const { checkPerm, sendEmailAPI } = require("../utils");
 // ============================================================
 
 // A. Demande de congé par l'employé
-
 router.all("/leave", async (req, res) => {
   const b = req.body;
   let justifUrl = null;
 
-  const justifFile = (req.files ||  
+  // ✅ LA CORRECTION EST ICI : On vérifie que req.files existe avant de chercher dedans
+  const justifFile = (req.files && Array.isArray(req.files)) 
+    ? req.files.find((f) => f.fieldname === "justificatif") 
+    : null;
+
   if (justifFile) {
-    const fileName = `justif_${Date.now()}_${justifFile.originalname}`;
+    const fileName = `justif_${Date.now()}_${justifFile.originalname.replace(/\s/g, "_")}`;
     await supabase.storage
       .from("documents")
       .upload(fileName, justifFile.buffer);
-    justifUrl = supabase.storage.from("documents").getPublicUrl(fileName)
-      .data.publicUrl;
+    
+    justifUrl = supabase.storage.from("documents").getPublicUrl(fileName).data.publicUrl;
   }
 
   const { error } = await supabase.from("conges").insert([
@@ -36,7 +39,11 @@ router.all("/leave", async (req, res) => {
     },
   ]);
 
-  if (error) throw error;
+  if (error) {
+    console.error("Erreur insertion congé:", error);
+    return res.status(500).json({ error: error.message });
+  }
+  
   return res.json({ status: "success" });
 });
 
