@@ -152,7 +152,7 @@ router.all("/read-report", async (req, res) => {
                     return res.json(report);
                 }
             } catch (err) { return res.status(500).json({ error: err.message }); }
-        }});
+        });
 
 
            
