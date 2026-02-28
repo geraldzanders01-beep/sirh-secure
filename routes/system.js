@@ -152,7 +152,10 @@ router.all("/read-report", async (req, res) => {
                     return res.json(report);
                 }
             } catch (err) { return res.status(500).json({ error: err.message }); }
-        }
+        }});
+
+
+           
 // --- GÉNÉRATION DU BADGE HTML ---
 router.all("/badge", async (req, res) => {
   const { id } = req.query;
