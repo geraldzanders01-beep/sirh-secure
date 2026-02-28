@@ -979,60 +979,73 @@ router.all("/read-visit-reports", async (req, res) => {
 
 
 
+
+// ============================================================
+// 11. AUDIT GLOBAL D'ACTIVITÉ (DÉLÉGUÉS)
+// ============================================================
 router.all("/get-global-audit", async (req, res) => {
-    // Vérification des paramètres
+    // Vérification de sécurité : Seul un Admin ou RH peut voir l'audit global
+    if (!checkPerm(req, "can_see_audit") && !checkPerm(req, "can_see_employees")) {
+        return res.status(403).json({ error: "Accès refusé à l'audit global" });
+    }
+
     const { month, year } = req.query;
     if (!month || !year) {
-        return res.status(400).json({ error: "Mois et année requis" });
+        return res.status(400).json({ error: "Paramètres mois et année manquants." });
     }
 
     const paddedMonth = String(month).padStart(2, '0');
     const searchPattern = `${year}-${paddedMonth}`; 
 
     try {
-        // 1. Récupération des données
-        const { data: emps } = await supabase.from('employees').select('id, nom, matricule, poste').eq('employee_type', 'MOBILE'); 
-        
-        // Optimisation conseillée : Filtrer directement par date dans Supabase pour éviter de charger toute la table
-        const { data: visits } = await supabase.from('visit_reports').select('*').ilike('check_in_time', `%${searchPattern}%`);
+        // 1. Récupération des données de base
+        // On ne prend que les employés de type MOBILE (Délégués)
+        const { data: emps } = await supabase
+            .from('employees')
+            .select('id, nom, matricule, poste')
+            .eq('employee_type', 'MOBILE'); 
+
+        // Optimisation : On filtre par date directement si possible, sinon on filtre en JS
+        const { data: visits } = await supabase.from('visit_reports').select('*');
         const { data: leaves } = await supabase.from('conges').select('*').eq('statut', 'Validé');
-        const { data: dailies } = await supabase.from('daily_reports').select('*').ilike('report_date', `%${searchPattern}%`);
+        const { data: dailies } = await supabase.from('daily_reports').select('*');
 
         if (!emps) return res.json([]);
 
+        // 2. Traitement des statistiques par employé
         const auditReport = emps.map(e => {
-            const sesVisites = (visits || []).filter(v => v.employee_id === e.id);
+            // Filtrage des visites du mois pour cet employé
+            const sesVisites = (visits || []).filter(v => {
+                const dateToCheck = v.check_out_time || v.check_in_time || v.created_at;
+                return v.employee_id === e.id && dateToCheck && dateToCheck.includes(searchPattern);
+            });
 
             const statsLieux = {};
-            const nomsProduitsUniques = new Set();
-            let totalProduits = 0;
+            const nomsProduitsUniques = new Set(); 
+            let totalProduitsCount = 0;
 
             sesVisites.forEach(v => {
                 const nameLieu = v.location_name || "Site inconnu";
                 statsLieux[nameLieu] = (statsLieux[nameLieu] || 0) + 1;
 
+                // --- GESTION DES PRODUITS ---
                 let prods = [];
                 try {
-                    if (typeof v.presented_products === 'string') {
-                        prods = JSON.parse(v.presented_products);
-                    } else if (Array.isArray(v.presented_products)) {
-                        prods = v.presented_products;
-                    }
-                } catch(err) {
-                    prods = []; // Sécurité en cas de JSON corrompu
-                }
+                    if (typeof v.presented_products === 'string') prods = JSON.parse(v.presented_products);
+                    else if (Array.isArray(v.presented_products)) prods = v.presented_products;
+                } catch(err) { prods = []; }
                 
-                // On s'assure que prods est bien un tableau avant de boucler
                 if (Array.isArray(prods)) {
-                    totalProduits += prods.length;
+                    totalProduitsCount += prods.length;
                     prods.forEach(p => {
-                        let pName = "";
+                        let pName = "Produit";
                         if (typeof p === 'object' && p !== null) {
                             pName = p.name || p.NAME || p.Name;
                         } else if (typeof p === 'string') {
+                            // Décodage si c'est un JSON stringifié (ton bug)
                             if (p.startsWith('{')) {
                                 try { 
-                                    const obj = JSON.parse(p);
+                                    const obj = JSON.parse(p); 
                                     pName = obj.name || obj.NAME || "Produit"; 
                                 } catch(e) { pName = p; }
                             } else {
@@ -1044,9 +1057,14 @@ router.all("/get-global-audit", async (req, res) => {
                 }
             });
 
-            const detailLieux = Object.entries(statsLieux).map(([n, c]) => `${n} (${c})`).join(', ') || "Aucune visite";
-            const detailProduits = Array.from(nomsProduitsUniques).join(', ') || "Aucun produit";
+            // Formatage des détails
+            const detailLieux = Object.entries(statsLieux)
+                .map(([n, c]) => `${n} (${c})`)
+                .join(', ') || "Aucune visite";
+                
+            const detailProduits = Array.from(nomsProduitsUniques).join(', ') || "Aucun produit présenté";
 
+            // --- GESTION DES CONGÉS (Calcul des jours) ---
             const sesConges = (leaves || []).filter(l => l.employee_id === e.id && l.date_debut && l.date_debut.includes(searchPattern));
             let joursAbsence = 0;
             sesConges.forEach(l => {
@@ -1057,16 +1075,17 @@ router.all("/get-global-audit", async (req, res) => {
                 }
             });
 
-            const sesDailies = (dailies || []).filter(d => d.employee_id === e.id);
+            // --- DERNIER RAPPORT JOURNALIER ---
+            const sesDailies = (dailies || []).filter(d => d.employee_id === e.id && d.report_date && d.report_date.includes(searchPattern));
 
             return {
                 matricule: e.matricule || 'N/A',
                 nom: e.nom,
                 poste: e.poste || 'Délégué',
                 total_visites: sesVisites.length,
-                total_produits: totalProduits,
+                total_produits: totalProduitsCount,
                 detail_lieux: detailLieux,
-                detail_produits: detailProduits,
+                detail_produits: detailProduits, 
                 jours_absence: joursAbsence,
                 dernier_rapport: sesDailies.length > 0 ? sesDailies[sesDailies.length - 1].summary : "Rien à signaler"
             };
@@ -1075,11 +1094,10 @@ router.all("/get-global-audit", async (req, res) => {
         return res.json(auditReport);
 
     } catch (err) {
-        console.error("Erreur Audit:", err);
+        console.error("Erreur Audit Global:", err.message);
         return res.status(500).json({ error: err.message });
     }
-}); 
-
+});
 
 
 
@@ -1287,4 +1305,5 @@ router.all("/get-performance-report", async (req, res) => {
 
   return res.json(Object.values(stats));
 });
+
 module.exports = router;
