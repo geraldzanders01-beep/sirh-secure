@@ -162,7 +162,7 @@ router.all("/read-report", async (req, res) => {
         console.error("Erreur read-report:", err.message);
         return res.status(500).json({ error: err.message });
     }
-}
+});
    
 
 // --- GÉNÉRATION DU BADGE HTML ---
