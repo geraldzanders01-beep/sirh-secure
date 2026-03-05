@@ -15,7 +15,7 @@ const mobileRoutes = require("./routes/mobile");
 const catalogRoutes = require("./routes/catalog");
 const chatRoutes = require("./routes/chat");
 const systemRoutes = require("./routes/system"); 
-
+const startCronJobs = require("./cron");
 const app = express();
 
 // --- CONFIGURATION MULTER (Uploads en mémoire pour plus de rapidité) ---
@@ -106,6 +106,10 @@ app.use((err, req, res, next) => {
     error: err.message || "Une erreur interne est survenue sur le serveur."
   });
 });
+
+
+startCronJobs();
+console.log("⏱️  Tâches planifiées (CRON) initialisées.");
 
 // Lancement du serveur
 const PORT = process.env.PORT || 4000;
