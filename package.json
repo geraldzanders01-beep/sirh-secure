@@ -17,6 +17,7 @@
     "nodemailer": "^7.0.13",
     "docxtemplater": "^3.42.0", 
     "pizzip": "^3.1.6",
+    "node-cron": "^3.0.3",
     "libreoffice-convert": "^1.6.0",
     "docxtemplater-image-module-free": "^1.1.1",
     "p-limit": "^3.1.0",
