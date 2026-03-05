@@ -45,136 +45,125 @@ router.all("/read-logs", async (req, res) => {
 // 10. GÉNÉRATEUR DE RAPPORTS (RECALCUL INTELLIGENT & AUTO-CLOSE)
 // ============================================================
 router.all("/read-report", async (req, res) => {
-    const isGlobalMode = req.query.mode === 'GLOBAL';
-    const isPersonalMode = req.query.mode === 'PERSONAL';
-    const { period } = req.query;
-    const now = new Date();
-    const todayStr = now.toISOString().split('T')[0];
+            const isGlobalMode = req.query.mode === 'GLOBAL';
+            const isPersonalMode = req.query.mode === 'PERSONAL';
+            const { period } = req.query;
+            const now = new Date();
+            const todayStr = now.toISOString().split('T')[0];
 
-    try {
-        // 1. RÉCUPÉRER LES EMPLOYÉS ACTIFS
-        let empQuery = supabase.from('employees')
-            .select('id, nom, matricule, departement, hierarchy_path, statut, employee_type')
-            .not('statut', 'ilike', '%sortie%');
+            try {
+                // 1. RÉCUPÉRER TOUS LES EMPLOYÉS ACTIFS (Pour ne pas avoir de trous dans la liste)
+                let empQuery = supabase.from('employees')
+                    .select('id, nom, matricule, departement, hierarchy_path, statut, employee_type')
+                    .not('statut', 'ilike', '%sortie%');
 
-        if (isPersonalMode) {
-            empQuery = empQuery.eq('id', req.user.emp_id);
-        } else if (isGlobalMode && !checkPerm(req, 'can_see_employees')) {
-            const { data: requester } = await supabase.from('employees')
-                .select('hierarchy_path, management_scope')
-                .eq('id', req.user.emp_id)
-                .single();
-
-            if (requester) {
-                let conditions = [];
-                if (requester.hierarchy_path) {
-                    conditions.push(`hierarchy_path.eq.${requester.hierarchy_path}`);
-                    conditions.push(`hierarchy_path.ilike.${requester.hierarchy_path}/%`);
-                }
-                if (requester.management_scope?.length > 0) {
-                    const scopeList = `(${requester.management_scope.map(s => `"${s}"`).join(',')})`;
-                    conditions.push(`departement.in.${scopeList}`);
-                }
-                if (conditions.length > 0) empQuery = empQuery.or(conditions.join(','));
-            }
-        }
-        const { data: employeesList } = await empQuery;
-
-        // 2. RÉCUPÉRER LES POINTAGES
-        let ptgQuery = supabase.from('pointages').select('*');
-        if (period === 'today') {
-            ptgQuery = ptgQuery.gte('heure', `${todayStr}T00:00:00`).lte('heure', `${todayStr}T23:59:59`);
-        } else {
-            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-            ptgQuery = ptgQuery.gte('heure', startOfMonth);
-        }
-        const { data: pointages } = await ptgQuery.order('heure', { ascending: true });
-
-        // 3. LOGIQUE JOURNALIÈRE (Correction du crash)
-        if (period === 'today') {
-            const report = (employeesList || []).map(emp => {
-                const sesPointages = (pointages || []).filter(p => p.employee_id === emp.id);
-                
-                let statut = "ABSENT";
-                let arrivee = "--:--";
-                let dureeStr = "0h 00m";
-                let zone = "---";
-
-                if (sesPointages.length > 0) {
-                    const firstIn = sesPointages.find(p => p.action === 'CLOCK_IN');
-                    const lastPoint = sesPointages[sesPointages.length - 1];
-
-                    if (firstIn) {
-                        arrivee = new Date(firstIn.heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
-                        zone = firstIn.zone_detectee || "Terrain";
-
-                        const start = new Date(firstIn.heure).getTime();
-                        // Sécurité : on vérifie si lastPoint existe avant d'accéder à .action
-                        const end = (lastPoint && lastPoint.action === 'CLOCK_IN') ? now.getTime() : new Date(lastPoint.heure).getTime();
-                        
-                        const diffMins = Math.max(0, Math.floor((end - start) / 60000));
-                        dureeStr = `${Math.floor(diffMins / 60)}h ${(diffMins % 60).toString().padStart(2, '0')}m`;
-                        statut = (lastPoint && lastPoint.action === 'CLOCK_IN') ? "PRÉSENT" : "PARTI";
+                // Filtres de sécurité (Manager/Perso)
+                if (isPersonalMode) empQuery = empQuery.eq('id', req.user.emp_id);
+                else if (isGlobalMode && !checkPerm(req, 'can_see_employees')) {
+                    const { data: requester } = await supabase.from('employees').select('hierarchy_path, management_scope').eq('id', req.user.emp_id).single();
+                    if (requester) {
+                        let securityCond = [`hierarchy_path.eq.${requester.hierarchy_path}`, `hierarchy_path.ilike.${requester.hierarchy_path}/%`];
+                        if (requester.management_scope?.length > 0) {
+                            const scopeList = `(${requester.management_scope.map(s => `"${s}"`).join(',')})`;
+                            securityCond.push(`departement.in.${scopeList}`);
+                        }
+                        empQuery = empQuery.or(securityCond.join(','));
                     }
                 }
+                const { data: employeesList } = await empQuery;
+
+                // 2. RÉCUPÉRER LES POINTAGES
+                let ptgQuery = supabase.from('pointages').select('*');
+                if (period === 'today') {
+                    ptgQuery = ptgQuery.gte('heure', `${todayStr}T00:00:00`).lte('heure', `${todayStr}T23:59:59`);
+                } else {
+                    ptgQuery = ptgQuery.gte('heure', new Date(now.getFullYear(), now.getMonth(), 1).toISOString());
+                }
+                const { data: pointages } = await ptgQuery.order('heure', { ascending: true });
+
+                // 3. LOGIQUE JOURNALIÈRE (LIVE)
+                if (period === 'today') {
+                    const report = employeesList.map(emp => {
+                        const sesPointages = (pointages || []).filter(p => p.employee_id === emp.id);
+                        const lastPoint = sesPointages[sesPointages.length - 1];
+                        
+                        let statut = "ABSENT";
+                        let arrivee = "--:--";
+                        let dureeStr = "0h 00m";
+                        let zone = "---";
+
+                        const firstIn = sesPointages.find(p => p.action === 'CLOCK_IN');
+                        if (firstIn) {
+                            arrivee = new Date(firstIn.heure).toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'});
+                            zone = firstIn.zone_detectee || "Terrain";
+                            
+                            // Calcul durée : Si dernier geste est IN -> calcule jusqu'à NOW. Si OUT -> calcule durée totale.
+                            const start = new Date(firstIn.heure).getTime();
+                            const end = (lastPoint.action === 'CLOCK_IN') ? now.getTime() : new Date(lastPoint.heure).getTime();
+                            const diffMins = Math.max(0, Math.floor((end - start) / 60000));
+                            dureeStr = `${Math.floor(diffMins / 60)}h ${(diffMins % 60).toString().padStart(2, '0')}m`;
+                            statut = (lastPoint.action === 'CLOCK_IN') ? "PRÉSENT" : "PARTI";
+                        }
+                        if (statut === "ABSENT" && emp.statut.toLowerCase().includes('cong')) statut = "CONGÉ";
+
+                        return { nom: emp.nom, matricule: emp.matricule, statut, arrivee, duree: dureeStr, zone };
+                    });
+                    return res.json(report.sort((a,b) => a.statut === "PRÉSENT" ? -1 : 1));
+                }
+
+                    
                 
-                if (statut === "ABSENT" && emp.statut && emp.statut.toLowerCase().includes('cong')) statut = "CONGÉ";
-
-                return { nom: emp.nom, matricule: emp.matricule, statut, arrivee, duree: dureeStr, zone };
-            });
-            return res.json(report.sort((a, b) => a.statut === "PRÉSENT" ? -1 : 1));
-        }
-
-        // 4. LOGIQUE MENSUELLE
+// 4. LOGIQUE MENSUELLE (RECONSTRUCTION + LIVE)
         else {
-            const report = (employeesList || []).map(emp => {
+            const report = employeesList.map(emp => {
                 const sesPointages = (pointages || []).filter(p => p.employee_id === emp.id);
                 const isSecurity = (emp.employee_type === 'FIXED' || emp.employee_type === 'SECURITY');
                 
-                let totalMs = 0;
-                let joursSet = new Set();
-                let pendingIn = null;
-
+                const days = {};
                 sesPointages.forEach(p => {
+                    const date = new Date(p.heure).toISOString().split('T')[0];
                     const time = new Date(p.heure).getTime();
-                    joursSet.add(new Date(p.heure).toLocaleDateString());
-
-                    if (p.action === 'CLOCK_IN') {
-                        if (pendingIn) totalMs += (calculateAutoClose(pendingIn, isSecurity) - pendingIn);
-                        pendingIn = time;
-                    } else if (p.action === 'CLOCK_OUT') {
-                        if (pendingIn) {
-                            totalMs += (time - pendingIn);
-                            pendingIn = null;
-                        }
-                    }
+                    if (!days[date]) days[date] = { min: time, max: time };
+                    if (time < days[date].min) days[date].min = time;
+                    if (time > days[date].max) days[date].max = time;
                 });
 
-                if (pendingIn) {
-                    if (new Date(pendingIn).toLocaleDateString() === now.toLocaleDateString()) {
-                        totalMs += (now.getTime() - pendingIn);
+                let totalMs = 0;
+                let joursCount = 0;
+
+                Object.keys(days).forEach(date => {
+                    const day = days[date];
+                    const isToday = (date === todayStr);
+
+                    if (isToday) {
+                        const endTime = (day.max > day.min) ? day.max : now.getTime();
+                        totalMs += (endTime - day.min);
                     } else {
-                        totalMs += (calculateAutoClose(pendingIn, isSecurity) - pendingIn);
+                        if (day.max === day.min) {
+                            totalMs += (calculateAutoClose(day.min, isSecurity) - day.min);
+                        } else {
+                            totalMs += (day.max - day.min);
+                        }
                     }
-                }
+                    joursCount++;
+                });
 
                 const tMins = Math.floor(totalMs / 60000);
                 return {
                     mois: now.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }),
                     nom: emp.nom,
-                    jours: joursSet.size,
+                    jours: joursCount,
                     heures: `${Math.floor(tMins / 60)}h ${(tMins % 60).toString().padStart(2, '0')}m`
                 };
             });
             return res.json(report);
         }
-    } catch (err) { 
-        console.error("Erreur Moteur Rapport:", err);
-        return res.status(500).json({ error: err.message }); 
+    } catch (err) {
+        console.error("Erreur read-report:", err.message);
+        return res.status(500).json({ error: err.message });
     }
-});
-
-
+}
+   
 
 // --- GÉNÉRATION DU BADGE HTML ---
 router.all("/badge", async (req, res) => {
