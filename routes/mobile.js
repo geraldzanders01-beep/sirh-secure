@@ -153,7 +153,7 @@ if (!checkPerm(req, 'can_clock')) return res.status(403).json({ error: "Interdit
         console.error("Erreur Clock:", err);
         return res.status(500).json({ error: err.message });
     }
-}
+});
 
 
 
