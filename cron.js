@@ -4,63 +4,79 @@ const pLimit = require('p-limit');
 const limit = pLimit(5);
 
 const startCronJobs = () => {
-    // Tous les jours à 22h00 (Heure de l'Afrique de l'Ouest / Bénin)
-    cron.schedule('0 22 * * *', async () => {
-        console.log("⏰ Lancement du job de clôture auto...");
+    // Le CRON tourne TOUTES LES HEURES à la minute 0 (ex: 18h00, 19h00, 20h00...)
+    cron.schedule('0 * * * *', async () => {
+        console.log("⏰ [CRON] Vérification des clôtures automatiques...");
+        
+        const nowBenin = new Date(new Date().getTime() + (1 * 60 * 60 * 1000));
+        const currentHour = nowBenin.getUTCHours();
+        const nowMs = nowBenin.getTime();
+
         try {
-            // 1. Chercher tous les employés actuellement "En Poste"
+            // 1. On cherche tous les employés qui sont actuellement "En Poste"
             const { data: enPoste, error } = await supabase
                 .from('employees')
-                .select('id, employee_type')
+                .select('id, nom, employee_type')
                 .eq('statut', 'En Poste');
 
-            if (error) throw error;
-            if (!enPoste || enPoste.length === 0) {
-                console.log("✅ Aucun agent à clôturer.");
-                return;
-            }
+            if (error || !enPoste || enPoste.length === 0) return;
 
-            console.log(`🔍 ${enPoste.length} agent(s) en poste trouvés.`);
+            // 2. On récupère leur dernier pointage pour vérifier depuis combien de temps ils travaillent
+            const ids = enPoste.map(e => e.id);
+            const { data: lastPointages } = await supabase
+                .from('pointages')
+                .select('employee_id, heure')
+                .in('employee_id', ids)
+                .eq('action', 'CLOCK_IN')
+                .order('heure', { ascending: false });
 
-            // 2. Traitement avec limitation (5 requêtes en parallèle max)
             const tasks = enPoste.map(emp => limit(async () => {
-                // On ignore les agents de sécurité ou fixes qui font des nuits
-                if (emp.employee_type === 'FIXED' || emp.employee_type === 'SECURITY') return;
+                let shouldClose = false;
+                
+                // On cherche l'heure de son entrée
+                const sonPointage = lastPointages.find(p => p.employee_id === emp.id);
+                if (!sonPointage) return; // Anomalie, on ignore
+                
+                const shiftDurationHours = (nowMs - new Date(sonPointage.heure).getTime()) / (1000 * 60 * 60);
 
-                // A. Insérer le pointage de sortie (CLOCK_OUT final)
-                const { error: insertErr } = await supabase.from('pointages').insert([{
-                    employee_id: emp.id,
-                    action: 'CLOCK_OUT',
-                    heure: new Date().toISOString(),
-                    is_final_out: true,
-                    zone_detectee: "AUTO_CLOSURE"
-                }]);
-
-                if (insertErr) {
-                    console.error(`❌ Erreur pointage pour ${emp.id}:`, insertErr.message);
-                    return;
+                // --- ⚖️ LES 3 RÈGLES MÉTIER ---
+                
+                if (emp.employee_type === 'OFFICE') {
+                    // RÈGLE BUREAU : Clôture si on dépasse 20h00 OU s'il travaille depuis plus de 12h
+                    if (currentHour >= 20 || shiftDurationHours > 12) shouldClose = true;
+                } 
+                else if (emp.employee_type === 'MOBILE') {
+                    // RÈGLE TERRAIN : Clôture à 02h00 du matin OU s'il travaille depuis plus de 15h
+                    if (currentHour === 2 || currentHour === 3 || shiftDurationHours > 15) shouldClose = true;
+                } 
+                else if (emp.employee_type === 'FIXED' || emp.employee_type === 'SECURITY') {
+                    // RÈGLE GARDIEN/NUIT : Uniquement basé sur la durée maximale (16h max)
+                    if (shiftDurationHours > 16) shouldClose = true;
                 }
 
-                // B. Mettre à jour le statut de l'employé à "Actif"
-                const { error: updateErr } = await supabase
-                    .from('employees')
-                    .update({ statut: 'Actif' })
-                    .eq('id', emp.id);
+                // --- 🛑 EXÉCUTION DE LA CLÔTURE ---
+                if (shouldClose) {
+                    // A. On pointe la sortie
+                    await supabase.from('pointages').insert([{
+                        employee_id: emp.id,
+                        action: 'CLOCK_OUT',
+                        heure: new Date().toISOString(),
+                        is_final_out: true,
+                        zone_detectee: "AUTO_CLOSURE"
+                    }]);
 
-                if (!updateErr) {
-                    console.log(`✅ Agent ${emp.id} clôturé automatiquement.`);
+                    // B. On libère l'agent
+                    await supabase.from('employees').update({ statut: 'Actif' }).eq('id', emp.id);
+                    
+                    console.log(`🤖 Auto-clôture appliquée pour : ${emp.nom} (${emp.employee_type}) - Heures écoulées : ${shiftDurationHours.toFixed(1)}h`);
                 }
             }));
 
             await Promise.all(tasks);
-            console.log("🏁 Job de clôture terminé.");
 
         } catch (err) { 
             console.error("❌ Erreur critique Cron :", err); 
         }
-    }, {
-        scheduled: true,
-        timezone: "Africa/Porto-Novo" // GARANTIT L'HEURE LOCALE
     });
 };
 
