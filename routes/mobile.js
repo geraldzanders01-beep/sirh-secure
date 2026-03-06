@@ -194,24 +194,32 @@ router.all('/attendance-status', async (req, res) => {
 
 router.all("/get-clock-status", async (req, res) => {
   const { employee_id } = req.query;
-  const now = new Date();
-  const todayStr = now.toISOString().split("T")[0];
-  const currentHour = now.getHours(); // Récupère l'heure (0-23)
+
+  // 1. GESTION DU FUSEAU HORAIRE (BÉNIN = UTC+1)
+  // Le serveur Render est en UTC. On ajoute 1 heure pour correspondre exactement à l'heure locale.
+  const nowUTC = new Date();
+  const nowBenin = new Date(nowUTC.getTime() + (1 * 60 * 60 * 1000));
+  
+  const todayStr = nowBenin.toISOString().split("T")[0]; // Date réelle au Bénin (Ex: 2026-03-06)
+  const currentHour = nowBenin.getUTCHours(); // Heure réelle au Bénin (0-23)
 
   try {
-    // 1. Récupérer l'employé et son type
+    // 2. Récupérer l'employé et son type
     const { data: emp } = await supabase
       .from("employees")
       .select("employee_type")
       .eq("id", employee_id)
       .single();
+      
     if (!emp) return res.status(404).json({ error: "Employé non trouvé" });
 
-    const isGuard = emp.employee_type === "FIXED"; // FIXED = Agent Site / Gardien
-    const isStandard =
-      emp.employee_type === "OFFICE" || emp.employee_type === "MOBILE";
+    // On sépare bien tous les profils
+    const isGuard = emp.employee_type === "FIXED" || emp.employee_type === "SECURITY";
+    const isMobile = emp.employee_type === "MOBILE";
+    const isOffice = emp.employee_type === "OFFICE";
 
-    // 2. VÉRIFICATION : Clôture manuelle aujourd'hui ?
+    // 3. VÉRIFICATION : Clôture manuelle AUJOURD'HUI ?
+    // On s'assure de ne regarder que les pointages de la VRAIE journée en cours.
     const { data: finalToday } = await supabase
       .from("pointages")
       .select("id")
@@ -220,13 +228,15 @@ router.all("/get-clock-status", async (req, res) => {
       .gte("heure", `${todayStr}T00:00:00`)
       .maybeSingle();
 
+    // S'il a expressément coché "Clôturer ma journée" AUJOURD'HUI, c'est fini.
     if (finalToday) {
       return res.json({ status: "DONE", day_finished: true });
     }
 
-    // 3. LOGIQUE DE CLÔTURE AUTOMATIQUE (Oublis de fin de journée)
-    // Si on est après 20h et que ce n'est PAS un gardien
-    if (isStandard && currentHour >= 20) {
+    // 4. LOGIQUE DE CLÔTURE AUTOMATIQUE À 20H
+    // 🛑 SEULS les sédentaires (OFFICE) voient leur journée bloquée après 20h.
+    // ✅ Les DÉLÉGUÉS (MOBILE) ne sont JAMAIS bloqués, ils peuvent pointer jusqu'à 23h59.
+    if (isOffice && currentHour >= 20) {
       return res.json({
         status: "DONE",
         day_finished: true,
@@ -234,7 +244,7 @@ router.all("/get-clock-status", async (req, res) => {
       });
     }
 
-    // 4. RÉCUPÉRER LE DERNIER POINTAGE
+    // 5. RÉCUPÉRER LE DERNIER POINTAGE POUR SAVOIR S'IL EST "IN" OU "OUT"
     const { data: lastRecord } = await supabase
       .from("pointages")
       .select("action, heure")
@@ -247,29 +257,34 @@ router.all("/get-clock-status", async (req, res) => {
     let isDayFinished = false;
 
     if (lastRecord) {
-      const lastTime = new Date(lastRecord.heure);
-      const diffHours = (now - lastTime) / (1000 * 60 * 60);
+      const lastTimeUTC = new Date(lastRecord.heure);
+      const diffHours = (nowUTC - lastTimeUTC) / (1000 * 60 * 60); // Durée depuis le dernier pointage
+      
+      // On convertit aussi l'heure du dernier pointage à l'heure du Bénin pour la comparaison
+      const lastTimeBenin = new Date(lastTimeUTC.getTime() + (1 * 60 * 60 * 1000));
+      const lastDateStr = lastTimeBenin.toISOString().split("T")[0];
 
       if (lastRecord.action === "CLOCK_IN") {
-        // SI C'EST UN GARDIEN (FIXED) : On autorise jusqu'à 18h de présence (même après minuit)
+        // GARDIEN : A le droit de pointer à cheval sur minuit (ex: Nuit)
         if (isGuard) {
           if (diffHours < 18) status = "IN";
         }
-        // SI C'EST UN STANDARD : On n'autorise la sortie que si l'entrée est d'AUJOURD'HUI
+        // OFFICE / MOBILE :
         else {
-          if (
-            lastTime.toISOString().split("T")[0] === todayStr &&
-            diffHours < 14
-          ) {
+          // Si l'entrée date bien d'aujourd'hui, il est IN.
+          // S'il a oublié de sortir hier, la date est différente -> on le reset à OUT pour qu'il puisse reprendre.
+          if (lastDateStr === todayStr && diffHours < 14) {
             status = "IN";
           } else {
-            // Oubli de sortie hier -> On reset pour aujourd'hui
             status = "OUT";
           }
         }
-      } else if (lastRecord.action === "CLOCK_OUT") {
-        // Pour les standards : si déjà sorti aujourd'hui, c'est fini.
-        if (isStandard && lastTime.toISOString().split("T")[0] === todayStr) {
+      } 
+      else if (lastRecord.action === "CLOCK_OUT") {
+        // S'il vient de sortir aujourd'hui :
+        // - OFFICE : Une sortie = Fin de journée par défaut.
+        // - MOBILE : Peut faire plusieurs visites dans la journée, donc "OUT" (prêt à re-rentrer).
+        if (isOffice && lastDateStr === todayStr) {
           status = "DONE";
           isDayFinished = true;
         } else {
@@ -283,11 +298,15 @@ router.all("/get-clock-status", async (req, res) => {
       employee_type: emp.employee_type,
       day_finished: isDayFinished,
     });
+    
   } catch (err) {
     console.error("Erreur status:", err.message);
     return res.status(500).json({ error: err.message });
   }
 });
+
+
+
 
 router.all("/live-attendance", async (req, res) => {
   try {
