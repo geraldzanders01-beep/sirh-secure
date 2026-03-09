@@ -334,7 +334,7 @@ router.all("/emp-update", async (req, res) => {
   if (address) updates.adresse = address;
   if (dob) updates.date_naissance = dob;
 
-  // Gestion de l'upload de fichier (Photo ou Document)
+// Gestion de l'upload de fichier (Photo ou Document)
   if (req.files && req.files.length > 0) {
     const file = req.files[0];
     if (file) {
@@ -353,26 +353,36 @@ router.all("/emp-update", async (req, res) => {
         .getPublicUrl(fileName);
 
       // Mapping des colonnes en base de données
-      if (doc_type === "text_update" || doc_type === "photo")
-        updates.photo_url = data.publicUrl;
+      if (doc_type === "text_update" || doc_type === "photo") updates.photo_url = data.publicUrl;
       else if (doc_type === "id_card") updates.id_card_url = data.publicUrl;
       else if (doc_type === "cv") updates.cv_url = data.publicUrl;
       else if (doc_type === "contrat") updates.contrat_pdf_url = data.publicUrl;
       else if (doc_type === "diploma") updates.diploma_url = data.publicUrl;
-      else if (doc_type === "attestation")
-        updates.attestation_url = data.publicUrl;
+      else if (doc_type === "attestation") updates.attestation_url = data.publicUrl;
+
+      // --- CORRECTION : ARCHIVAGE IMMÉDIAT ET SÉCURISÉ ---
+      // On archive uniquement si ce n'est pas juste un texte
+      if (doc_type !== "text_update") {
+          // On s'assure d'avoir le nom de l'agent (depuis req.body si le token ne l'a pas)
+          const agentName = req.body.agent || "Système RH";
+          
+          await supabase.from("employee_archives").insert([{
+              employee_id: targetId,
+              doc_type: doc_type,
+              file_url: data.publicUrl, // On archive le NOUVEAU fichier
+              agent: agentName
+          }]);
+          console.log(`🗄️ Document archivé : ${doc_type} pour ID ${targetId}`);
+      }
     }
   }
 
   // Si rien à mettre à jour
   if (Object.keys(updates).length === 0) {
-    return res.json({
-      status: "success",
-      message: "Aucune modification détectée",
-    });
+    return res.json({ status: "success", message: "Aucune modification détectée" });
   }
 
-  // Exécution de la mise à jour
+  // Exécution de la mise à jour (remplace la photo sur la page d'accueil)
   const { error } = await supabase
     .from("employees")
     .update(updates)
@@ -383,31 +393,8 @@ router.all("/emp-update", async (req, res) => {
     throw error;
   }
 
-
-// --- NOUVEAU : ARCHIVAGE DE LA VERSION ---
-  // On archive uniquement si c'est un document (on ignore les simples mises à jour de texte/téléphone)
-  if (doc_type !== "text_update" && updates[doc_type + "_url"] || doc_type === "photo") {
-      let fileUrlToArchive = null;
-      if (doc_type === "photo") fileUrlToArchive = updates.photo_url;
-      else if (doc_type === "id_card") fileUrlToArchive = updates.id_card_url;
-      else if (doc_type === "cv") fileUrlToArchive = updates.cv_url;
-      else if (doc_type === "contrat") fileUrlToArchive = updates.contrat_pdf_url;
-      else if (doc_type === "diploma") fileUrlToArchive = updates.diploma_url;
-      else if (doc_type === "attestation") fileUrlToArchive = updates.attestation_url;
-
-      if (fileUrlToArchive) {
-          await supabase.from("employee_archives").insert([{
-              employee_id: targetId,
-              doc_type: doc_type,
-              file_url: fileUrlToArchive,
-              agent: req.user.nom || "Système"
-          }]);
-      }
-  }
-  
   return res.json({ status: "success" });
 });
-
 
 
 
