@@ -569,4 +569,73 @@ router.all("/delete-employee", async (req, res) => {
   }
 });
 
+
+
+// --- UPLOAD MASSIF (SCAN D'ARCHIVES) ---
+router.all("/bulk-upload-docs", async (req, res) => {
+  if (!checkPerm(req, "can_see_employees")) {
+    return res.status(403).json({ error: "Accès refusé à la gestion documentaire." });
+  }
+
+  const empId = req.body.employee_id;
+  const agent = req.body.agent || "RH";
+
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json({ error: "Aucun fichier reçu." });
+  }
+
+  let updates = {};
+  let archivesToInsert =[];
+
+  try {
+    for (const file of req.files) {
+      // Le fieldname (ex: 'cv', 'id_card', 'contrat') définit le type de document
+      const docType = file.fieldname; 
+      const fileExt = file.originalname.split('.').pop();
+      const fileName = `ARCHIVE_${docType.toUpperCase()}_ID${empId}_${Date.now()}.${fileExt}`;
+
+      // 1. Upload dans Supabase Storage
+      const { error: storageErr } = await supabase.storage
+        .from("documents")
+        .upload(fileName, file.buffer, { contentType: file.mimetype });
+
+      if (storageErr) {
+        console.error(`Erreur upload ${docType}:`, storageErr.message);
+        continue; // On passe au fichier suivant en cas d'erreur
+      }
+
+      // 2. Récupération de l'URL publique
+      const { data } = supabase.storage.from("documents").getPublicUrl(fileName);
+      const fileUrl = data.publicUrl;
+
+      // 3. On prépare la mise à jour du profil actif
+      updates[`${docType}_url`] = fileUrl;
+      // Cas particulier pour le contrat (nom de colonne différent)
+      if (docType === 'contrat') updates[`contrat_pdf_url`] = fileUrl;
+
+      // 4. On prépare l'insertion dans l'historique
+      archivesToInsert.push({
+        employee_id: empId,
+        doc_type: docType,
+        file_url: fileUrl,
+        agent: agent
+      });
+    }
+
+    // Sauvegarde en Base de Données
+    if (Object.keys(updates).length > 0) {
+      await supabase.from("employees").update(updates).eq("id", empId);
+    }
+    
+    if (archivesToInsert.length > 0) {
+      await supabase.from("employee_archives").insert(archivesToInsert);
+    }
+
+    return res.json({ status: "success", count: archivesToInsert.length });
+  } catch (err) {
+    console.error("Erreur Bulk Upload:", err.message);
+    return res.status(500).json({ error: "Erreur lors de la numérisation massive." });
+  }
+});
+
 module.exports = router;
