@@ -299,6 +299,36 @@ router.all("/read-payroll", async (req, res) => {
   }
 });
 
+
+// --- MARQUER UN BULLETIN COMME LU (PREUVE JURIDIQUE) ---
+router.all("/mark-payroll-read", async (req, res) => {
+  const { id } = req.body;
+
+  try {
+    // On vérifie d'abord si le bulletin n'a pas DÉJÀ été lu
+    const { data: existing } = await supabase
+      .from("paie")
+      .select("date_consultation")
+      .eq("id", id)
+      .single();
+
+    // S'il n'a jamais été lu, on enregistre la date actuelle
+    if (existing && !existing.date_consultation) {
+      const { error } = await supabase
+        .from("paie")
+        .update({ date_consultation: new Date().toISOString() })
+        .eq("id", id);
+      
+      if (error) throw error;
+    }
+
+    return res.json({ status: "success" });
+  } catch (err) {
+    console.error("Erreur mark-payroll-read:", err.message);
+    return res.status(500).json({ error: "Impossible de marquer comme lu" });
+  }
+});
+
 router.all("/read-config-salaries", async (req, res) => {
   const { data, error } = await supabase
     .from("salaries_config")
