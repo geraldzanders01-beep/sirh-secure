@@ -381,7 +381,52 @@ router.all("/emp-update", async (req, res) => {
     throw error;
   }
 
+
+// --- NOUVEAU : ARCHIVAGE DE LA VERSION ---
+  // On archive uniquement si c'est un document (on ignore les simples mises à jour de texte/téléphone)
+  if (doc_type !== "text_update" && updates[doc_type + "_url"] || doc_type === "photo") {
+      let fileUrlToArchive = null;
+      if (doc_type === "photo") fileUrlToArchive = updates.photo_url;
+      else if (doc_type === "id_card") fileUrlToArchive = updates.id_card_url;
+      else if (doc_type === "cv") fileUrlToArchive = updates.cv_url;
+      else if (doc_type === "contrat") fileUrlToArchive = updates.contrat_pdf_url;
+      else if (doc_type === "diploma") fileUrlToArchive = updates.diploma_url;
+      else if (doc_type === "attestation") fileUrlToArchive = updates.attestation_url;
+
+      if (fileUrlToArchive) {
+          await supabase.from("employee_archives").insert([{
+              employee_id: targetId,
+              doc_type: doc_type,
+              file_url: fileUrlToArchive,
+              agent: req.user.nom || "Système"
+          }]);
+      }
+  }
+  
   return res.json({ status: "success" });
+});
+
+
+
+
+
+
+// --- LIRE L'HISTORIQUE D'UN DOCUMENT ---
+router.all("/read-archives", async (req, res) => {
+    const { employee_id, doc_type } = req.query;
+    if (!checkPerm(req, "can_view_employee_files") && req.user.emp_id !== employee_id) {
+        return res.status(403).json({ error: "Accès refusé" });
+    }
+    
+    const { data, error } = await supabase
+        .from("employee_archives")
+        .select("*")
+        .eq("employee_id", employee_id)
+        .eq("doc_type", doc_type)
+        .order("created_at", { ascending: false });
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json(data);
 });
 
 // ============================================================
