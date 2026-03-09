@@ -7,6 +7,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.93.3",
+    "archiver": "^7.0.1",
     "axios": "^1.6.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
