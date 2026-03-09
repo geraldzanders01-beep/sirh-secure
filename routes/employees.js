@@ -631,7 +631,6 @@ router.all("/bulk-upload-docs", async (req, res) => {
 
 // --- EXPORTER TOUT LE DOSSIER EN ZIP ---
 router.get("/export-folder/:id", async (req, res) => {
-    // Sécurité : Seul un RH/Admin peut télécharger un dossier complet
     if (!checkPerm(req, "can_view_employee_files") && !checkPerm(req, "can_see_employees")) {
         return res.status(403).json({ error: "Accès refusé" });
     }
@@ -639,62 +638,79 @@ router.get("/export-folder/:id", async (req, res) => {
     const empId = req.params.id;
 
     try {
-        // 1. Récupérer les liens des documents de l'employé
-        const { data: emp, error } = await supabase
-            .from("employees")
-            .select("nom, matricule, contrat_pdf_url, cv_url, id_card_url, diploma_url, attestation_url")
-            .eq("id", empId)
-            .single();
+        // 1. Récupération TOTALE des données
+        const [empRes, archivesRes, paieRes, congesRes, candidaturesRes] = await Promise.all([
+            supabase.from("employees").select("*").eq("id", empId).single(),
+            supabase.from("employee_archives").select("*").eq("employee_id", empId),
+            supabase.from("paie").select("*").eq("employee_id", empId),
+            supabase.from("conges").select("*").eq("employee_id", empId),
+            supabase.from("candidatures").select("*").eq("email", "REMPLACER_PAR_EMAIL_OU_ID_SI_LIEN") // Optionnel selon ta BDD
+        ]);
 
-        if (error || !emp) return res.status(404).json({ error: "Employé introuvable" });
+        const emp = empRes.data;
+        if (!emp) return res.status(404).json({ error: "Employé introuvable" });
 
-        // Vérifier s'il y a au moins un document
-        const hasDocs = emp.contrat_pdf_url || emp.cv_url || emp.id_card_url || emp.diploma_url || emp.attestation_url;
-        if (!hasDocs) return res.status(400).json({ error: "Ce dossier est totalement vide. Rien à exporter." });
+        const cleanName = emp.nom.replace(/[^a-zA-Z0-9]/g, "_");
+        const zipFilename = `Dossier_RH_${emp.matricule}_${cleanName}.zip`;
 
-        // 2. Préparer le nom du fichier ZIP
-        const cleanName = emp.nom.replace(/[^a-zA-Z0-9]/g, "_"); // Enlève les accents/espaces pour le nom du fichier
-        const zipFilename = `Dossier_${emp.matricule}_${cleanName}.zip`;
-
-        // 3. Configurer la réponse HTTP pour déclencher un téléchargement direct
         res.setHeader('Content-Type', 'application/zip');
         res.setHeader('Content-Disposition', `attachment; filename=${zipFilename}`);
 
-        // 4. Initialiser l'archiveur
-        const archive = archiver('zip', { zlib: { level: 9 } }); // Compression maximale
-        
-        archive.on('error', (err) => { throw err; });
-        archive.pipe(res); // Connecte le flux ZIP directement à la réponse du navigateur
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        archive.pipe(res);
 
-        // 5. Fonction utilitaire pour aspirer un fichier depuis Supabase et l'injecter dans le ZIP
-        const addFileToZip = async (url, customFilename) => {
+        // Fonction helper pour ajouter au zip
+        const addFileToZip = async (url, folderName, customFilename) => {
             if (!url || url === "null" || url.length < 5) return;
             try {
-                // Astuce pour récupérer la vraie extension (.pdf, .jpg, .png) depuis l'URL
-                const ext = url.split('.').pop().split('?')[0] || 'pdf'; 
-                const finalName = `${customFilename}.${ext}`;
-
-                // Téléchargement du fichier en tant que flux (stream)
                 const response = await axios.get(url, { responseType: 'stream' });
-                archive.append(response.data, { name: finalName });
-            } catch (e) {
-                console.error(`Impossible d'ajouter ${customFilename} au ZIP :`, e.message);
-            }
+                const ext = url.split('.').pop().split('?')[0] || 'pdf';
+                archive.append(response.data, { name: `${folderName}/${customFilename}.${ext}` });
+            } catch (e) { console.warn(`Fichier absent ou inaccessible: ${customFilename}`); }
         };
 
-        // 6. On ajoute les documents un par un dans le ZIP
-        await addFileToZip(emp.contrat_pdf_url, `1_Contrat_${cleanName}`);
-        await addFileToZip(emp.id_card_url, `2_Piece_Identite_${cleanName}`);
-        await addFileToZip(emp.cv_url, `3_CV_${cleanName}`);
-        await addFileToZip(emp.diploma_url, `4_Diplome_${cleanName}`);
-        await addFileToZip(emp.attestation_url, `5_Attestation_${cleanName}`);
+        // --- DOSSIER 0 : IDENTITÉ & PHOTO ---
+        await addFileToZip(emp.photo_url, "0_Identite_et_Photo", "Photo_Profil");
 
-        // 7. On ferme le ZIP (ce qui envoie le fichier finalisé au client)
+        // --- DOSSIER 1 : ADMINISTRATIF ---
+        const dirAdmin = "1_Dossier_Administratif";
+        await addFileToZip(emp.contrat_pdf_url, dirAdmin, "Contrat_Actuel");
+        await addFileToZip(emp.id_card_url, dirAdmin, "Piece_Identite");
+        await addFileToZip(emp.cv_url, dirAdmin, "CV");
+        await addFileToZip(emp.diploma_url, dirAdmin, "Diplome");
+        await addFileToZip(emp.attestation_url, dirAdmin, "Attestation");
+
+        // --- DOSSIER 2 : HISTORIQUE DES DOCUMENTS ---
+        if (archivesRes.data) {
+            for (const arc of archivesRes.data) {
+                const date = arc.created_at.split('T')[0];
+                await addFileToZip(arc.file_url, "2_Historique_Documents", `${arc.doc_type}_${date}`);
+            }
+        }
+
+        // --- DOSSIER 3 : PAIE ---
+        if (paieRes.data) {
+            for (const p of paieRes.data) {
+                await addFileToZip(p.fiche_pdf_url, "3_Bulletins_Paie", `Bulletin_${p.annee}_${p.mois}`);
+            }
+        }
+
+        // --- DOSSIER 4 : CONGÉS ET ABSENCES (Avec récap texte) ---
+        if (congesRes.data) {
+            let recap = `RAPPORT DES CONGÉS - ${emp.nom}\nMatricule: ${emp.matricule}\n\n`;
+            for (const c of congesRes.data) {
+                recap += `Type: ${c.type} | Date: ${c.date_debut} au ${c.date_fin} | Statut: ${c.statut}\n`;
+                recap += `Motif: ${c.motif}\n------------------\n`;
+                if (c.justificatif_url) await addFileToZip(c.justificatif_url, "4_Conges_Justificatifs", `Justificatif_${c.date_debut}`);
+            }
+            archive.append(recap, { name: "4_Conges_Justificatifs/Recapitulatif_Absences.txt" });
+        }
+
         await archive.finalize();
 
     } catch (err) {
-        console.error("Erreur Export ZIP:", err.message);
-        if (!res.headersSent) res.status(500).json({ error: "Erreur lors de la génération de l'archive." });
+        console.error("Erreur Export ZIP:", err);
+        res.status(500).json({ error: "Erreur lors de la création du ZIP." });
     }
 });
 module.exports = router;
