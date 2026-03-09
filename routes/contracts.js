@@ -386,6 +386,15 @@ router.all("/contract-upload", async (req, res) => {
       })
       .eq("id", id);
 
+
+    // --- NOUVEAU : ARCHIVER LE CONTRAT SIGNÉ ---
+    await supabase.from("employee_archives").insert([{
+        employee_id: id,
+        doc_type: "contrat",
+        file_url: contractUrl,
+        agent: req.user.nom || "Système"
+    }]);
+    
     return res.json({ status: "success", url: contractUrl });
   } else {
     return res
