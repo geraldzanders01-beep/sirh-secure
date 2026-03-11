@@ -43,7 +43,9 @@ const upload = multer({
 // --- CONFIGURATION CORS SÉCURISÉE (Production uniquement) ---
 const allowedOrigins = [
     'https://sirh.cataria-systems.com',
-    'https://dom4002.github.io' // Tu peux le garder si tu utilises encore cette URL
+    'http://sirh.cataria-systems.com', 
+    'https://dom4002.github.io',
+    'http://dom4002.github.io'
 ];
 
 // --- CONFIGURATION CORS  ---
