@@ -39,7 +39,28 @@ const upload = multer({
   },
 });
 
-app.use(cors());
+
+// --- CONFIGURATION CORS SÉCURISÉE (Production uniquement) ---
+const allowedOrigins = [
+    'https://sirh.cataria-systems.com',
+    'https://dom4002.github.io' // Tu peux le garder si tu utilises encore cette URL
+];
+
+app.use(cors({
+    origin: function (origin, callback) {
+        // Autorise les requêtes sans origine (comme Postman ou les outils de test mobile)
+        if (!origin) return callback(null, true);
+        
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            callback(new Error('Accès refusé par la politique CORS'));
+        }
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    credentials: true
+}));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
