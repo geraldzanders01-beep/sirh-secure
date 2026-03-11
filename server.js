@@ -46,18 +46,19 @@ const allowedOrigins = [
     'https://dom4002.github.io' // Tu peux le garder si tu utilises encore cette URL
 ];
 
+// --- CONFIGURATION CORS  ---
 app.use(cors({
     origin: function (origin, callback) {
-        // Autorise les requêtes sans origine (comme Postman ou les outils de test mobile)
-        if (!origin) return callback(null, true);
-        
-        if (allowedOrigins.indexOf(origin) !== -1) {
+        // Autorise les requêtes sans origine (Postman/Mobile) ET ton domaine
+        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
             callback(null, true);
         } else {
-            callback(new Error('Accès refusé par la politique CORS'));
+            console.log("CORS Bloqué pour origine :", origin);
+            callback(new Error('Non autorisé par CORS'));
         }
     },
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true
 }));
 
