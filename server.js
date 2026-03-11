@@ -105,7 +105,7 @@ const authenticateToken = (req, res, next) => {
 app.use("/api", authenticateToken);
 
 // 2. Ensuite on traite les fichiers (UNE SEULE FOIS pour toutes les routes en dessous)
-app.use("/api", upload.any());
+//app.use("/api", upload.any());
 
 // 3. Enfin on dirige vers les fichiers de routes
 app.use("/api", authRoutes);
