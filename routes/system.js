@@ -917,4 +917,28 @@ router.all("/check-closing-time", async (req, res) => {
     });
 });
 
+
+// --- LIRE LES LABELS DYNAMIQUES ---
+router.get("/read-labels", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("app_labels")
+      .select("label_key, singular, plural");
+
+    if (error) throw error;
+
+    // On transforme le tableau en un objet facile à utiliser pour le front
+    const labels = {};
+    data.forEach(item => {
+      labels[`${item.label_key}_singular`] = item.singular;
+      labels[`${item.label_key}_plural`] = item.plural;
+    });
+
+    return res.json(labels);
+  } catch (err) {
+    console.error("Erreur lecture labels:", err.message);
+    return res.status(500).json({ error: "Impossible de charger les labels." });
+  }
+});
+
 module.exports = router;
