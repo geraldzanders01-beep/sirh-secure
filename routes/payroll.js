@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const supabase = require("../supabaseClient");
-const { checkPerm } = require("../utils");
+const { checkPerm, sendPushNotification } = require("../utils"); 
 
 // Outils pour la génération des PDF
 const libre = require("libreoffice-convert");
@@ -68,8 +68,13 @@ router.all("/read-payroll-full", async (req, res) => {
   }
 });
 
+
+
+
+
+
 // ============================================================
-// 15. GÉNÉRATION DES BULLETINS DE PAIE (DESIGN PREMIUM PDF) ✅
+// 15. GÉNÉRATION DES BULLETINS DE PAIE (PDF + PUSH NOTIFS) ✅
 // ============================================================
 
 router.all("/process-payroll", async (req, res) => {
@@ -84,13 +89,10 @@ router.all("/process-payroll", async (req, res) => {
       const fmt = (val) =>
         new Intl.NumberFormat("fr-FR").format(val || 0) + " CFA";
 
-      // Dans server.js, boucle record of payrollRecords
-      const cnssPart = Math.round(
-        record.salaire_base * (record.taux_cnss / 100),
-      );
-      const irppPart = record.retenues - cnssPart; // On déduit l'IRPP du reste des retenues
+      const cnssPart = Math.round(record.salaire_base * (record.taux_cnss / 100));
+      const irppPart = record.retenues - cnssPart;
 
-const htmlSlip = `
+      const htmlSlip = `
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -100,7 +102,6 @@ const htmlSlip = `
         body { font-family: 'Helvetica', 'Arial', sans-serif; color: #1e293b; margin: 0; padding: 0; background-color: #fff; }
         .page { width: 210mm; min-height: 297mm; padding: 20mm; margin: auto; box-sizing: border-box; position: relative; }
         
-        /* En-tête */
         .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #2563eb; padding-bottom: 20px; margin-bottom: 30px; }
         .company-info h1 { font-size: 24px; font-weight: 900; color: #1e293b; margin: 0; letter-spacing: -1px; }
         .company-info p { font-size: 10px; color: #64748b; margin: 2px 0; }
@@ -108,14 +109,12 @@ const htmlSlip = `
         .document-title h2 { font-size: 18px; font-weight: 800; color: #2563eb; margin: 0; text-transform: uppercase; }
         .document-title p { font-size: 12px; font-weight: bold; margin: 5px 0; color: #1e293b; }
 
-        /* Grille Infos */
         .info-grid { display: flex; gap: 20px; margin-bottom: 30px; }
         .info-card { flex: 1; border: 1px solid #e2e8f0; padding: 15px; border-radius: 12px; background-color: #f8fafc; }
         .info-card h3 { font-size: 9px; text-transform: uppercase; color: #64748b; margin: 0 0 10px 0; letter-spacing: 1px; border-bottom: 1px solid #e2e8f0; padding-bottom: 5px; }
         .info-card p { font-size: 11px; margin: 4px 0; line-height: 1.4; }
         .info-card strong { color: #0f172a; }
 
-        /* Tableau */
         table { width: 100%; border-collapse: collapse; margin-bottom: 30px; }
         th { font-size: 10px; text-transform: uppercase; background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; padding: 12px 10px; text-align: left; }
         td { font-size: 11px; border: 1px solid #e2e8f0; padding: 10px; color: #334155; }
@@ -123,7 +122,6 @@ const htmlSlip = `
         .col-amount { text-align: right; font-weight: 600; width: 100px; }
         .col-base { text-align: center; width: 100px; color: #64748b; }
 
-        /* Totaux et Net */
         .summary-box { display: flex; justify-content: flex-end; margin-top: 10px; }
         .summary-table { width: 250px; }
         .summary-table td { border: none; padding: 5px 10px; }
@@ -139,102 +137,85 @@ const htmlSlip = `
             display: flex; 
             justify-content: space-between; 
             align-items: center;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
         }
         .net-label { font-size: 14px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
         .net-amount { font-size: 26px; font-weight: 900; color: #3b82f6; }
 
-        /* Bas de page */
         .footer { position: absolute; bottom: 20mm; left: 20mm; right: 20mm; text-align: center; border-top: 1px solid #e2e8f0; padding-top: 20px; }
         .footer p { font-size: 9px; color: #94a3b8; margin: 2px 0; line-height: 1.5; }
-        .signature-space { margin-top: 40px; display: flex; justify-content: space-between; }
-        .signature-box { width: 200px; border-top: 1px dashed #cbd5e1; padding-top: 10px; font-size: 10px; color: #64748b; font-weight: bold; }
     </style>
 </head>
 <body>
     <div class="page">
-        <!-- EN-TETE -->
         <div class="header">
             <div class="company-info">
                 <h1>SIRH SECURE</h1>
                 <p>Solutions de Gestion RH & Opérationnelle</p>
-                <p>Cotonou, Bénin | Tél: +229 00 00 00 00</p>
-                <p>RCCM: RB/COT/24 B 0000 | IFU: 0000000000000</p>
+                <p>Cotonou, Bénin</p>
             </div>
             <div class="document-title">
                 <h2>Bulletin de Paie</h2>
                 <p>${record.mois.toUpperCase()} ${record.annee}</p>
-                <p style="font-size: 9px; color: #64748b; font-weight: normal;">Réf: BP-${record.annee}-${record.matricule}</p>
             </div>
         </div>
 
-        <!-- INFOS EMPLOYE -->
         <div class="info-grid">
             <div class="info-card">
                 <h3>Informations Salarié</h3>
                 <p>Nom: <strong>${record.nom}</strong></p>
                 <p>Matricule: <strong>${record.matricule}</strong></p>
                 <p>Poste: <strong>${record.poste}</strong></p>
-                <p>Département: <strong>${record.departement || 'Non défini'}</strong></p>
             </div>
             <div class="info-card">
-                <h3>Détails Contrat</h3>
-                <p>Période: <strong>01/${record.mois} au 30/${record.mois}</strong></p>
-                <p>Date d'embauche: <strong>${record.date_embauche || '--/--/----'}</strong></p>
-                <p>Mode de paiement: <strong>Virement Mobile / Espèces</strong></p>
-                <p>Temps de travail: <strong>100% (Temps plein)</strong></p>
+                <h3>Détails Période</h3>
+                <p>Mois: <strong>${record.mois} ${record.annee}</strong></p>
+                <p>Mode: <strong>Virement / Mobile Money</strong></p>
             </div>
         </div>
 
-        <!-- TABLEAU DES ELEMENTS -->
         <table>
             <thead>
                 <tr>
-                    <th>Désignation des éléments de salaire</th>
-                    <th class="col-base">Base / Taux</th>
+                    <th>Désignation</th>
+                    <th class="col-base">Taux</th>
                     <th class="col-amount">Gains</th>
                     <th class="col-amount">Retenues</th>
                 </tr>
             </thead>
             <tbody>
-                <!-- ELEMENTS DE REVENUS -->
                 <tr>
-                    <td>Salaire de Base Fixe</td>
+                    <td>Salaire de base</td>
                     <td class="col-base">100%</td>
                     <td class="col-amount">${fmt(record.salaire_base)}</td>
                     <td class="col-amount"></td>
                 </tr>
                 <tr>
-                    <td>Indemnités forfaitaires (Transport & Logement)</td>
-                    <td class="col-base">Forfait</td>
+                    <td>Indemnités forfaitaires</td>
+                    <td class="col-base">Fixe</td>
                     <td class="col-amount">${fmt(record.indemnites_fixes)}</td>
                     <td class="col-amount"></td>
                 </tr>
                 <tr>
-                    <td>Primes exceptionnelles et Gratifications</td>
+                    <td>Primes variables</td>
                     <td class="col-base">Variable</td>
                     <td class="col-amount">${fmt(record.primes)}</td>
                     <td class="col-amount"></td>
                 </tr>
-
-                <!-- COTISATIONS ET IMPOTS -->
                 <tr>
-                    <td style="padding-left: 20px; color: #64748b;">Cotisation Sociale (CNSS)</td>
+                    <td style="color: #64748b;">Cotisation CNSS</td>
                     <td class="col-base">${record.taux_cnss}%</td>
                     <td class="col-amount"></td>
                     <td class="col-amount">${fmt(cnssPart)}</td>
                 </tr>
                 <tr>
-                    <td style="padding-left: 20px; color: #64748b;">Impôt sur le Revenu (IRPP)</td>
-                    <td class="col-base">${record.taux_irpp}% (est.)</td>
+                    <td style="color: #64748b;">Impôt IRPP</td>
+                    <td class="col-base">${record.taux_irpp}%</td>
                     <td class="col-amount"></td>
                     <td class="col-amount">${fmt(irppPart)}</td>
                 </tr>
-
-                <!-- ACOMPTES -->
                 ${record.acomptes > 0 ? `
                 <tr>
-                    <td style="font-weight: bold; color: #d97706;">Acomptes sur salaire / Avances perçues</td>
+                    <td style="font-weight: bold; color: #d97706;">Acomptes / Avances perçues</td>
                     <td class="col-base">Déduction</td>
                     <td class="col-amount"></td>
                     <td class="col-amount" style="color: #d97706;">${fmt(record.acomptes)}</td>
@@ -243,53 +224,21 @@ const htmlSlip = `
             </tbody>
         </table>
 
-        <!-- RECAPITULATIF -->
-        <div class="summary-box">
-            <table class="summary-table">
-                <tr>
-                    <td class="label">Total Salaire Brut :</td>
-                    <td class="value">${fmt(record.salaire_base + record.indemnites_fixes + record.primes)}</td>
-                </tr>
-                <tr>
-                    <td class="label">Total Retenues & Taxes :</td>
-                    <td class="value" style="color: #ef4444;">- ${fmt(record.retenues)}</td>
-                </tr>
-                ${record.acomptes > 0 ? `
-                <tr>
-                    <td class="label">Total Acomptes :</td>
-                    <td class="value" style="color: #ef4444;">- ${fmt(record.acomptes)}</td>
-                </tr>
-                ` : ''}
-            </table>
-        </div>
-
-        <!-- ZONE NET A PAYER -->
         <div class="net-box">
             <div class="net-label">Net à Payer (CFA)</div>
             <div class="net-amount">${fmt(record.salaire_net)}</div>
         </div>
 
-        <!-- SIGNATURES -->
-        <div class="signature-space">
-            <div class="signature-box">Signature de l'employeur</div>
-            <div class="signature-box">Signature du salarié</div>
-        </div>
-
-        <!-- PIED DE PAGE -->
         <div class="footer">
-            <p>Ce bulletin de paie est un document numérique certifié par le système SIRH SECURE.</p>
+            <p>Document numérique certifié par SIRH SECURE</p>
             <p>Généré le ${new Date().toLocaleDateString("fr-FR")} à ${new Date().toLocaleTimeString("fr-FR")}</p>
-            <p>Pour faire valoir ce que de droit. L'absence de signature ne remet pas en cause la validité de la remise numérique.</p>
         </div>
     </div>
 </body>
-</html>
-`;
+</html>`;
 
-      // 2. CONVERSION VECTORIELLE (HTML -> PDF via LibreOffice)
+      // 2. CONVERSION VECTORIELLE
       const htmlBuffer = Buffer.from(htmlSlip, "utf-8");
-
-      console.log("🔄 Conversion PDF Vectoriel pour :", record.nom);
       const pdfBuffer = await pdfLimiter(() =>
         convertAsync(htmlBuffer, ".pdf", undefined),
       );
@@ -307,28 +256,53 @@ const htmlSlip = `
         .getPublicUrl(fileName);
 
       // 4. INSERTION DANS LA TABLE PAIE
-      await supabase.from("paie").insert([
+      const { error: insertErr } = await supabase.from("paie").insert([
         {
           employee_id: record.id,
           mois: record.mois,
           annee: parseInt(record.annee),
           salaire_base: parseInt(record.salaire_base),
           primes: parseInt(record.primes),
+          acomptes: parseInt(record.acomptes || 0), // Sauvegarde de l'acompte
           retenues: parseInt(record.retenues),
           salaire_net: parseInt(record.salaire_net),
           fiche_pdf_url: publicData.publicUrl,
         },
       ]);
+
+      if (insertErr) throw insertErr;
+
+      // ============================================================
+      // 🔥 NOUVEAU : DÉCLENCHEMENT DE LA NOTIFICATION PUSH
+      // ============================================================
+      try {
+        // A. On récupère l'ID utilisateur lié à cet employé
+        const { data: emp } = await supabase
+          .from("employees")
+          .select("user_associated_id, nom")
+          .eq("id", record.id)
+          .single();
+
+        if (emp && emp.user_associated_id) {
+          // B. On envoie la notification
+          sendPushNotification(
+            emp.user_associated_id,
+            "💸 Bulletin de Paie disponible !",
+            `Bonjour ${emp.nom}, votre fiche de paie de ${record.mois} ${record.annee} est prête.`,
+            "/#my-profile"
+          );
+        }
+      } catch (pushErr) {
+        console.error("Erreur lors de l'envoi du Push Paie:", pushErr.message);
+      }
     }
     return res.json({ status: "success" });
   } catch (err) {
     console.error("❌ Erreur Paie:", err.message);
-    return res
-      .status(500)
-      .json({ error: "Erreur lors de la génération des bulletins PDF." });
+    return res.status(500).json({ error: "Erreur lors de la génération des bulletins." });
   }
 });
-
+              
 router.all("/read-payroll", async (req, res) => {
   const { employee_id } = req.query;
 
