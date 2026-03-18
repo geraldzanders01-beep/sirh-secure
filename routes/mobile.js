@@ -8,38 +8,39 @@ const { checkPerm, getDistanceInMeters } = require("../utils");
 router.all("/clock", async (req, res) => {
     if (!checkPerm(req, 'can_clock')) return res.status(403).json({ error: "Interdit" });
 
-    // 1. Récupération des données
-    const { id, action: clockAction, ip, outcome, report, is_last_exit, presentedProducts, time, schedule_id, forced_location_id, prescripteur_id, contact_nom_libre } = req.body;
-    
-    // --- FIX CRITIQUE DU GPS ---
-    let gpsRaw = req.body.gps;
-    
-    // Si le GPS arrive sous forme de tableau (bug fréquent des parsers), on prend le premier élément
-    if (Array.isArray(gpsRaw)) gpsRaw = gpsRaw[0];
+    // 1. Récupération propre des données (Gestion Multer/Body)
+    const id = req.body.id;
+    const clockAction = req.body.action;
+    const gps = req.body.gps || "0,0";
+    const time = req.body.time;
 
-    // Si vraiment rien n'est reçu, on met une valeur par défaut pour éviter le crash
-    const gpsString = (gpsRaw && gpsRaw !== "undefined") ? gpsRaw : "0,0";
-    
-    const [userLat, userLon] = gpsString.split(',').map(parseFloat);
-    // ---------------------------
+    // Log pour debugger sur Render
+    console.log(`📡 Tentative de pointage - ID: [${id}] - Action: ${clockAction}`);
+
+    if (!id) {
+        return res.status(400).json({ error: "ID employé manquant dans la requête." });
+    }
 
     const eventTime = time ? new Date(time) : new Date();
     const today = eventTime.toISOString().split('T')[0];
-    
-    let proofUrl = null;
-
-    if (req.files && req.files.length > 0) {
-        const file = req.files.find(f => f.fieldname === 'proof_photo');
-        if (file) {
-            const fileName = `VISITE_ID${id}_${Date.now()}.jpg`;                    
-            const { error: upErr } = await supabase.storage.from('documents').upload(fileName, file.buffer, { contentType: file.mimetype });
-            if (!upErr) proofUrl = supabase.storage.from('documents').getPublicUrl(fileName).data.publicUrl;
-        }
-    }
 
     try {
-        const { data: emp } = await supabase.from('employees').select('employee_type').eq('id', id).single();
-        if (!emp) throw new Error("Employé introuvable");
+        // 2. Identification de l'employé avec vérification d'erreur précise
+        const { data: emp, error: empErr } = await supabase
+            .from('employees')
+            .select('id, employee_type')
+            .eq('id', id.trim()) // On ajoute .trim() au cas où il y aurait un espace invisible
+            .maybeSingle(); // maybeSingle évite de crasher s'il n'y a rien
+
+        if (empErr) {
+            console.error("❌ Erreur Supabase lors de la recherche employe:", empErr.message);
+            throw new Error("Erreur base de données lors de la vérification.");
+        }
+
+        if (!emp) {
+            console.error(`❌ Employé non trouvé en BDD pour l'ID: ${id}`);
+            return res.status(404).json({ error: "Employé introuvable dans la base de données." });
+        }
         
         const isMobileAgent = (emp.employee_type === 'MOBILE');
 
