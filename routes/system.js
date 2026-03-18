@@ -6,19 +6,27 @@ const { checkPerm, sendEmailAPI, calculateAutoClose } = require("../utils");
 // --- LECTURE DES LOGS ---
 router.all("/read-logs", async (req, res) => {
   if (!checkPerm(req, "can_see_audit")) {
-    return res.status(403).json({ error: "Accès refusé à l'Audit" });
+    return res.status(403).json({ error: "Accès refusé" });
   }
 
-  const page = parseInt(req.query.page) || 1;
-  const limit = 20; // On affiche 20 logs par page
-  const offset = (page - 1) * limit;
+  const { page = 1, type = "all" } = req.query;
+  const limit = 20;
+  const offset = (parseInt(page) - 1) * limit;
 
   try {
-    const { data, error, count } = await supabase
+    let query = supabase
       .from("logs")
-      .select("*", { count: "exact" }) // Demande le nombre total pour la pagination
-      .order("created_at", { ascending: false }) // Les plus récents en premier
-      .range(offset, offset + limit - 1); // La clé de la pagination
+      .select("*", { count: "exact" });
+
+    // --- NOUVEAU : LOGIQUE DE FILTRE ---
+    if (type !== "all") {
+        // On cherche le mot clé dans la colonne action
+        query = query.ilike("action", `%${type}%`);
+    }
+
+    const { data, error, count } = await query
+      .order("created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
 
     if (error) throw error;
 
@@ -26,12 +34,11 @@ router.all("/read-logs", async (req, res) => {
       data: data,
       meta: {
         total: count,
-        page: page,
+        page: parseInt(page),
         last_page: Math.ceil(count / limit),
       },
     });
   } catch (err) {
-    console.error("Erreur read-logs:", err.message);
     return res.status(500).json({ error: err.message });
   }
 });
