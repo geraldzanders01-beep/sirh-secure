@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const supabase = require("../supabaseClient");
-const { checkPerm, sendEmailAPI } = require("../utils");
+const { checkPerm, sendEmailAPI, sendPushNotification } = require("../utils"); 
 
 // ============================================================
 // 6. MODULE DES CONGÉS (NOUVEAU ✅)
@@ -88,8 +88,9 @@ router.all("/read-leaves", async (req, res) => {
   return res.json(mapped);
 });
 
+
 // ============================================================
-// 6-C. ACTION SUR UN CONGÉ (VALIDATION AVEC CALCUL JOURS OUVRÉS) ✅
+// 6-C. ACTION SUR UN CONGÉ (VALIDATION AVEC PUSH NOTIFICATIONS) ✅
 // ============================================================
 router.all("/leave-action", async (req, res) => {
   if (!req.user.permissions || !req.user.permissions.can_see_employees) {
@@ -103,6 +104,7 @@ router.all("/leave-action", async (req, res) => {
   console.log(`⚖️ Décision RH : ${decision} pour le congé ID ${id}`);
 
   // 1. Récupérer les détails du congé et de l'employé lié
+  // Note : on récupère user_associated_id pour envoyer le Push au bon compte
   const { data: conge, error: congeErr } = await supabase
     .from("conges")
     .select("*, employees(*)")
@@ -118,6 +120,7 @@ router.all("/leave-action", async (req, res) => {
   const employe = Array.isArray(conge.employees)
     ? conge.employees[0]
     : conge.employees;
+
   if (!employe) throw new Error("Employé lié introuvable");
 
   const typeConge = conge.type;
@@ -128,17 +131,13 @@ router.all("/leave-action", async (req, res) => {
   let nbJours = 0;
   let loopDate = new Date(debut);
 
-  // On boucle jour par jour
   while (loopDate <= fin) {
     const dayOfWeek = loopDate.getDay();
-    // Si ce n'est pas Dimanche (0) et pas Samedi (6), on compte
     if (dayOfWeek !== 0 && dayOfWeek !== 6) {
       nbJours++;
     }
-    // Jour suivant
     loopDate.setDate(loopDate.getDate() + 1);
   }
-  // -------------------------------------------------------------
 
   // 3. Mise à jour du statut du congé dans Supabase
   const { error: updateErr } = await supabase
@@ -152,18 +151,13 @@ router.all("/leave-action", async (req, res) => {
   if (decision === "Validé") {
     let updates = { statut: "Congé" };
 
-    // On déduit le solde uniquement pour Congé Payé et Maladie
-    // (On utilise le nouveau nbJours calculé sans les weekends)
     if (typeConge === "Congé Payé" || typeConge === "Maladie") {
       const soldeActuel = parseFloat(employe.solde_conges) || 0;
       updates.solde_conges = soldeActuel - nbJours;
     }
 
     await supabase.from("employees").update(updates).eq("id", employe.id);
-
-    console.log(
-      `📉 Employé ${employe.nom} mis à jour : Statut=Congé, Déduit=${nbJours}j`,
-    );
+    console.log(`📉 Employé ${employe.nom} mis à jour : Statut=Congé, Déduit=${nbJours}j`);
   } else if (decision === "Refusé") {
     await supabase
       .from("employees")
@@ -171,31 +165,43 @@ router.all("/leave-action", async (req, res) => {
       .eq("id", employe.id);
   }
 
-  // Emails
+  // ============================================================
+  // 🔥 NOUVEAU : DÉCLENCHEMENT DE LA NOTIFICATION PUSH NATIVE
+  // ============================================================
+  if (employe.user_associated_id) {
+    const pushTitle = decision === "Validé" ? "✅ Congé Approuvé !" : "❌ Mise à jour Congé";
+    const pushBody = decision === "Validé" 
+      ? `Bonne nouvelle ${employe.nom}, votre demande pour ${typeConge} (${nbJours}j) a été validée.`
+      : `Désolé ${employe.nom}, votre demande pour ${typeConge} n'a pas été acceptée.`;
+    
+    // On envoie le signal au téléphone de l'employé
+    sendPushNotification(
+      employe.user_associated_id, 
+      pushTitle, 
+      pushBody, 
+      "/#my-profile" // Redirection vers son profil au clic
+    );
+  }
+
+  // 5. ENVOI DE L'EMAIL (Logique existante)
   let emailSubject = "";
   let emailHtml = "";
 
   if (decision === "Validé") {
     emailSubject = `Approbation de votre demande de congé - ${employe.nom}`;
-    emailHtml = `
-                            <div style="font-family: Arial, sans-serif; line-height: 1.6;">
-                                <p>Bonjour ${employe.nom},</p>
-                                <p>Nous avons le plaisir de vous informer que votre demande de <strong>${typeConge}</strong> a été officiellement <strong>APPROUVÉE</strong>.</p>
-                                <p><strong>Durée validée :</strong> ${nbJours} jours ouvrés (Week-ends exclus).</p>
-                                <p>Votre statut a été mis à jour dans le système. Nous vous souhaitons une excellente période de repos.</p>
-                                <br>
-                                <p>Cordialement,<br>Le Service RH</p>
-                            </div>`;
+    emailHtml = `<div style="font-family: Arial, sans-serif; line-height: 1.6;">
+                    <p>Bonjour ${employe.nom},</p>
+                    <p>Nous avons le plaisir de vous informer que votre demande de <strong>${typeConge}</strong> a été officiellement <strong>APPROUVÉE</strong>.</p>
+                    <p><strong>Durée validée :</strong> ${nbJours} jours ouvrés.</p>
+                    <br><p>Cordialement,<br>Le Service RH</p>
+                </div>`;
   } else {
     emailSubject = `Mise à jour concernant votre demande de congé`;
-    emailHtml = `
-                            <div style="font-family: Arial, sans-serif; line-height: 1.6;">
-                                <p>Bonjour ${employe.nom},</p>
-                                <p>Nous vous informons que votre demande de <strong>${typeConge}</strong> n'a pas pu être validée par ${agent || "le service RH"}.</p>
-                                <p>Conformément à nos procédures internes, nous vous invitons à vous rapprocher de votre responsable pour obtenir plus de précisions.</p>
-                                <br>
-                                <p>Cordialement,<br>Le service des Ressources Humaines</p>
-                            </div>`;
+    emailHtml = `<div style="font-family: Arial, sans-serif; line-height: 1.6;">
+                    <p>Bonjour ${employe.nom},</p>
+                    <p>Nous vous informons que votre demande de <strong>${typeConge}</strong> n'a pas pu être validée par ${agent || "le service RH"}.</p>
+                    <br><p>Cordialement,<br>Le service des Ressources Humaines</p>
+                </div>`;
   }
 
   try {
@@ -220,6 +226,10 @@ router.all("/leave-action", async (req, res) => {
     message: `Demande ${decision.toLowerCase()} (${nbJours}j déduits)`,
   });
 });
+
+
+
+
 
 router.all("/check-returns", async (req, res) => {
   if (!req.user.permissions || !req.user.permissions.can_send_announcements) {
