@@ -1,5 +1,7 @@
 const axios = require("axios");
 const supabase = require("./supabaseClient");
+const webpush = require('web-push');
+
 
 // Fonction pour calculer la date de fin (Date début + nombre de jours)
 const getEndDate = (startDate, days) => {
@@ -121,6 +123,44 @@ async function isModuleActive(moduleKey) {
   return data ? data.is_active : false; // Par défaut false si pas trouvé
 }
 
+
+
+/**
+ * Envoie une notification Push à un utilisateur spécifique
+ */
+async function sendPushNotification(userId, title, body, url = '/') {
+    // 1. Récupérer tous les abonnements (téléphones/PC) de cet utilisateur
+    const { data: subs, error } = await supabase
+        .from('push_subscriptions')
+        .select('*')
+        .eq('user_id', userId);
+
+    if (error || !subs || subs.length === 0) return;
+
+    // 2. Créer le message
+    const payload = JSON.stringify({ title, body, url });
+
+    // 3. Envoyer à chaque appareil enregistré
+    const tasks = subs.map(sub => {
+        const pushConfig = {
+            endpoint: sub.endpoint,
+            keys: { auth: sub.auth, p256dh: sub.p256dh }
+        };
+
+        return webpush.sendNotification(pushConfig, payload).catch(err => {
+            // Si le token n'est plus valide (app désinstallée), on nettoie la base
+            if (err.statusCode === 410 || err.statusCode === 404) {
+                return supabase.from('push_subscriptions').delete().eq('id', sub.id);
+            }
+            console.error("Erreur d'envoi Push :", err);
+        });
+    });
+
+    await Promise.all(tasks);
+}
+
+
+
 module.exports = {
   getEndDate,
   isTargetAuthorized,
@@ -128,5 +168,6 @@ module.exports = {
   getDistanceInMeters,
   sendEmailAPI,
   isModuleActive,
+  sendPushNotification,
   calculateAutoClose
 };
