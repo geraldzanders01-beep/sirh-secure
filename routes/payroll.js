@@ -90,122 +90,201 @@ router.all("/process-payroll", async (req, res) => {
       );
       const irppPart = record.retenues - cnssPart; // On déduit l'IRPP du reste des retenues
 
-      const htmlSlip = `
+const htmlSlip = `
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
     <style>
         @page { size: A4; margin: 0; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #1e293b; margin: 0; padding: 0; }
-        .page { width: 210mm; min-height: 297mm; padding: 15mm; margin: auto; box-sizing: border-box; }
+        body { font-family: 'Helvetica', 'Arial', sans-serif; color: #1e293b; margin: 0; padding: 0; background-color: #fff; }
+        .page { width: 210mm; min-height: 297mm; padding: 20mm; margin: auto; box-sizing: border-box; position: relative; }
         
-        .header { display: flex; justify-content: space-between; border-bottom: 2px solid #334155; padding-bottom: 10px; margin-bottom: 20px; }
-        .logo-box { font-size: 24px; font-weight: 800; color: #0f172a; }
-        .title-box { text-align: right; }
+        /* En-tête */
+        .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #2563eb; padding-bottom: 20px; margin-bottom: 30px; }
+        .company-info h1 { font-size: 24px; font-weight: 900; color: #1e293b; margin: 0; letter-spacing: -1px; }
+        .company-info p { font-size: 10px; color: #64748b; margin: 2px 0; }
+        .document-title { text-align: right; }
+        .document-title h2 { font-size: 18px; font-weight: 800; color: #2563eb; margin: 0; text-transform: uppercase; }
+        .document-title p { font-size: 12px; font-weight: bold; margin: 5px 0; color: #1e293b; }
+
+        /* Grille Infos */
+        .info-grid { display: flex; gap: 20px; margin-bottom: 30px; }
+        .info-card { flex: 1; border: 1px solid #e2e8f0; padding: 15px; border-radius: 12px; background-color: #f8fafc; }
+        .info-card h3 { font-size: 9px; text-transform: uppercase; color: #64748b; margin: 0 0 10px 0; letter-spacing: 1px; border-bottom: 1px solid #e2e8f0; padding-bottom: 5px; }
+        .info-card p { font-size: 11px; margin: 4px 0; line-height: 1.4; }
+        .info-card strong { color: #0f172a; }
+
+        /* Tableau */
+        table { width: 100%; border-collapse: collapse; margin-bottom: 30px; }
+        th { font-size: 10px; text-transform: uppercase; background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; padding: 12px 10px; text-align: left; }
+        td { font-size: 11px; border: 1px solid #e2e8f0; padding: 10px; color: #334155; }
         
-        .info-grid { display: flex; gap: 10px; margin-bottom: 20px; }
-        .info-card { flex: 1; border: 1px solid #e2e8f0; padding: 10px; border-radius: 8px; font-size: 11px; }
-        .label { font-size: 8px; color: #64748b; text-transform: uppercase; font-weight: bold; }
+        .col-amount { text-align: right; font-weight: 600; width: 100px; }
+        .col-base { text-align: center; width: 100px; color: #64748b; }
+
+        /* Totaux et Net */
+        .summary-box { display: flex; justify-content: flex-end; margin-top: 10px; }
+        .summary-table { width: 250px; }
+        .summary-table td { border: none; padding: 5px 10px; }
+        .summary-table .label { text-align: right; color: #64748b; }
+        .summary-table .value { text-align: right; font-weight: bold; font-size: 12px; }
         
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 11px; }
-        th { background: #f8fafc; border: 1px solid #e2e8f0; padding: 8px; text-align: left; }
-        td { border: 1px solid #e2e8f0; padding: 8px; }
-        
-        .row-total { background: #f1f5f9; font-weight: bold; }
-        .net-box { margin-top: 20px; background: #2563eb; color: white; padding: 15px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
-        .net-amount { font-size: 22px; font-weight: 900; }
-        .footer { font-size: 9px; color: #94a3b8; text-align: center; margin-top: 30px; border-top: 1px solid #f1f5f9; padding-top: 10px; }
+        .net-box { 
+            margin-top: 20px; 
+            background: #0f172a; 
+            color: white; 
+            padding: 20px; 
+            border-radius: 12px; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .net-label { font-size: 14px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
+        .net-amount { font-size: 26px; font-weight: 900; color: #3b82f6; }
+
+        /* Bas de page */
+        .footer { position: absolute; bottom: 20mm; left: 20mm; right: 20mm; text-align: center; border-top: 1px solid #e2e8f0; padding-top: 20px; }
+        .footer p { font-size: 9px; color: #94a3b8; margin: 2px 0; line-height: 1.5; }
+        .signature-space { margin-top: 40px; display: flex; justify-content: space-between; }
+        .signature-box { width: 200px; border-top: 1px dashed #cbd5e1; padding-top: 10px; font-size: 10px; color: #64748b; font-weight: bold; }
     </style>
 </head>
 <body>
     <div class="page">
+        <!-- EN-TETE -->
         <div class="header">
-            <div class="logo-box">SIRH SECURE</div>
-            <div class="title-box">
-                <h2 style="margin:0; font-size:16px;">BULLETIN DE PAIE</h2>
-                <p style="margin:0; font-size:10px;">Période : ${record.mois} ${record.annee}</p>
+            <div class="company-info">
+                <h1>SIRH SECURE</h1>
+                <p>Solutions de Gestion RH & Opérationnelle</p>
+                <p>Cotonou, Bénin | Tél: +229 00 00 00 00</p>
+                <p>RCCM: RB/COT/24 B 0000 | IFU: 0000000000000</p>
+            </div>
+            <div class="document-title">
+                <h2>Bulletin de Paie</h2>
+                <p>${record.mois.toUpperCase()} ${record.annee}</p>
+                <p style="font-size: 9px; color: #64748b; font-weight: normal;">Réf: BP-${record.annee}-${record.matricule}</p>
             </div>
         </div>
 
+        <!-- INFOS EMPLOYE -->
         <div class="info-grid">
             <div class="info-card">
-                <span class="label">Employeur</span><br>
-                <strong>SIRH-SECURE SOLUTIONS</strong><br>Cotonou, Bénin
+                <h3>Informations Salarié</h3>
+                <p>Nom: <strong>${record.nom}</strong></p>
+                <p>Matricule: <strong>${record.matricule}</strong></p>
+                <p>Poste: <strong>${record.poste}</strong></p>
+                <p>Département: <strong>${record.departement || 'Non défini'}</strong></p>
             </div>
             <div class="info-card">
-                <span class="label">Salarié</span><br>
-                <strong>${record.nom}</strong><br>
-                Matricule: ${record.matricule}<br>
-                Poste: ${record.poste}
+                <h3>Détails Contrat</h3>
+                <p>Période: <strong>01/${record.mois} au 30/${record.mois}</strong></p>
+                <p>Date d'embauche: <strong>${record.date_embauche || '--/--/----'}</strong></p>
+                <p>Mode de paiement: <strong>Virement Mobile / Espèces</strong></p>
+                <p>Temps de travail: <strong>100% (Temps plein)</strong></p>
             </div>
         </div>
 
+        <!-- TABLEAU DES ELEMENTS -->
         <table>
             <thead>
                 <tr>
-                    <th>Désignation</th>
-                    <th>Base / Taux</th>
-                    <th style="text-align:right">Gains</th>
-                    <th style="text-align:right">Retenues</th>
+                    <th>Désignation des éléments de salaire</th>
+                    <th class="col-base">Base / Taux</th>
+                    <th class="col-amount">Gains</th>
+                    <th class="col-amount">Retenues</th>
                 </tr>
             </thead>
             <tbody>
-                <!-- GAINS -->
+                <!-- ELEMENTS DE REVENUS -->
                 <tr>
-                    <td>Salaire de base</td>
-                    <td>100%</td>
-                    <td style="text-align:right">${fmt(record.salaire_base)}</td>
-                    <td></td>
+                    <td>Salaire de Base Fixe</td>
+                    <td class="col-base">100%</td>
+                    <td class="col-amount">${fmt(record.salaire_base)}</td>
+                    <td class="col-amount"></td>
                 </tr>
                 <tr>
-                    <td>Indemnités contractuelles (Logement/Transp.)</td>
-                    <td>Fixe</td>
-                    <td style="text-align:right">${fmt(record.indemnites_fixes)}</td>
-                    <td></td>
+                    <td>Indemnités forfaitaires (Transport & Logement)</td>
+                    <td class="col-base">Forfait</td>
+                    <td class="col-amount">${fmt(record.indemnites_fixes)}</td>
+                    <td class="col-amount"></td>
                 </tr>
                 <tr>
-                    <td>Primes et gratifications</td>
-                    <td>Variable</td>
-                    <td style="text-align:right">${fmt(record.primes)}</td>
-                    <td></td>
-                </tr>
-                
-                <!-- RETENUES EXPLICITES -->
-                <tr>
-                    <td>Cotisation Sociale (CNSS)</td>
-                    <td>${record.taux_cnss}%</td>
-                    <td></td>
-                    <td style="text-align:right">${fmt(cnssPart)}</td>
-                </tr>
-                <tr>
-                    <td>Impôt sur le Revenu (IRPP)</td>
-                    <td>${record.taux_irpp}% (est.)</td>
-                    <td></td>
-                    <td style="text-align:right">${fmt(irppPart)}</td>
+                    <td>Primes exceptionnelles et Gratifications</td>
+                    <td class="col-base">Variable</td>
+                    <td class="col-amount">${fmt(record.primes)}</td>
+                    <td class="col-amount"></td>
                 </tr>
 
-                <tr class="row-total">
-                    <td>TOTAUX</td>
-                    <td></td>
-                    <td style="text-align:right">${fmt(record.salaire_base + record.indemnites_fixes + record.primes)}</td>
-                    <td style="text-align:right">${fmt(record.retenues)}</td>
+                <!-- COTISATIONS ET IMPOTS -->
+                <tr>
+                    <td style="padding-left: 20px; color: #64748b;">Cotisation Sociale (CNSS)</td>
+                    <td class="col-base">${record.taux_cnss}%</td>
+                    <td class="col-amount"></td>
+                    <td class="col-amount">${fmt(cnssPart)}</td>
                 </tr>
+                <tr>
+                    <td style="padding-left: 20px; color: #64748b;">Impôt sur le Revenu (IRPP)</td>
+                    <td class="col-base">${record.taux_irpp}% (est.)</td>
+                    <td class="col-amount"></td>
+                    <td class="col-amount">${fmt(irppPart)}</td>
+                </tr>
+
+                <!-- ACOMPTES -->
+                ${record.acomptes > 0 ? `
+                <tr>
+                    <td style="font-weight: bold; color: #d97706;">Acomptes sur salaire / Avances perçues</td>
+                    <td class="col-base">Déduction</td>
+                    <td class="col-amount"></td>
+                    <td class="col-amount" style="color: #d97706;">${fmt(record.acomptes)}</td>
+                </tr>
+                ` : ''}
             </tbody>
         </table>
 
-        <div class="net-box">
-            <span style="font-weight:bold; text-transform:uppercase;">Net à percevoir</span>
-            <span class="net-amount">${fmt(record.salaire_net)}</span>
+        <!-- RECAPITULATIF -->
+        <div class="summary-box">
+            <table class="summary-table">
+                <tr>
+                    <td class="label">Total Salaire Brut :</td>
+                    <td class="value">${fmt(record.salaire_base + record.indemnites_fixes + record.primes)}</td>
+                </tr>
+                <tr>
+                    <td class="label">Total Retenues & Taxes :</td>
+                    <td class="value" style="color: #ef4444;">- ${fmt(record.retenues)}</td>
+                </tr>
+                ${record.acomptes > 0 ? `
+                <tr>
+                    <td class="label">Total Acomptes :</td>
+                    <td class="value" style="color: #ef4444;">- ${fmt(record.acomptes)}</td>
+                </tr>
+                ` : ''}
+            </table>
         </div>
 
+        <!-- ZONE NET A PAYER -->
+        <div class="net-box">
+            <div class="net-label">Net à Payer (CFA)</div>
+            <div class="net-amount">${fmt(record.salaire_net)}</div>
+        </div>
+
+        <!-- SIGNATURES -->
+        <div class="signature-space">
+            <div class="signature-box">Signature de l'employeur</div>
+            <div class="signature-box">Signature du salarié</div>
+        </div>
+
+        <!-- PIED DE PAGE -->
         <div class="footer">
-            Bulletin de paie numérique généré le ${new Date().toLocaleDateString("fr-FR")}<br>
-            Pour faire valoir ce que de droit.
+            <p>Ce bulletin de paie est un document numérique certifié par le système SIRH SECURE.</p>
+            <p>Généré le ${new Date().toLocaleDateString("fr-FR")} à ${new Date().toLocaleTimeString("fr-FR")}</p>
+            <p>Pour faire valoir ce que de droit. L'absence de signature ne remet pas en cause la validité de la remise numérique.</p>
         </div>
     </div>
 </body>
-</html>`;
+</html>
+`;
 
       // 2. CONVERSION VECTORIELLE (HTML -> PDF via LibreOffice)
       const htmlBuffer = Buffer.from(htmlSlip, "utf-8");
@@ -299,6 +378,33 @@ router.all("/read-payroll", async (req, res) => {
   }
 });
 
+
+// --- MISE À JOUR DES CONSTANTES DE PAIE ---
+router.post("/update-config-salaries", async (req, res) => {
+    if (!checkPerm(req, "can_see_payroll") && !checkPerm(req, "can_manage_config")) {
+        return res.status(403).json({ error: "Accès refusé" });
+    }
+
+    const { cnss, irpp } = req.body;
+
+    try {
+        // Met à jour la CNSS
+        await supabase.from("salaries_config").update({ value_number: parseFloat(cnss) }).eq("key_code", "CNSS_EMPLOYEE_RATE");
+        // Met à jour l'IRPP
+        await supabase.from("salaries_config").update({ value_number: parseFloat(irpp) }).eq("key_code", "IRPP_BASE_RATE");
+
+        // Log d'audit
+        await supabase.from("logs").insert([{
+            agent: req.user.nom || "RH",
+            action: "PARAMÈTRES PAIE",
+            details: `Mise à jour des taux : CNSS (${cnss}%) | IRPP (${irpp}%)`
+        }]);
+
+        return res.json({ status: "success" });
+    } catch (e) {
+        return res.status(500).json({ error: e.message });
+    }
+});
 
 // --- MARQUER UN BULLETIN COMME LU (PREUVE JURIDIQUE) ---
 router.all("/mark-payroll-read", async (req, res) => {
