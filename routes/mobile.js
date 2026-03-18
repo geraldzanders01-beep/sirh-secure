@@ -196,12 +196,9 @@ router.all("/get-clock-status", async (req, res) => {
   const { employee_id } = req.query;
 
   // 1. GESTION DU FUSEAU HORAIRE (BÉNIN = UTC+1)
-  // Le serveur Render est en UTC. On ajoute 1 heure pour correspondre exactement à l'heure locale.
   const nowUTC = new Date();
   const nowBenin = new Date(nowUTC.getTime() + (1 * 60 * 60 * 1000));
-  
-  const todayStr = nowBenin.toISOString().split("T")[0]; // Date réelle au Bénin (Ex: 2026-03-06)
-  const currentHour = nowBenin.getUTCHours(); // Heure réelle au Bénin (0-23)
+  const todayStr = nowBenin.toISOString().split("T")[0]; 
 
   try {
     // 2. Récupérer l'employé et son type
@@ -213,13 +210,10 @@ router.all("/get-clock-status", async (req, res) => {
       
     if (!emp) return res.status(404).json({ error: "Employé non trouvé" });
 
-    // On sépare bien tous les profils
     const isGuard = emp.employee_type === "FIXED" || emp.employee_type === "SECURITY";
-    const isMobile = emp.employee_type === "MOBILE";
     const isOffice = emp.employee_type === "OFFICE";
 
-    // 3. VÉRIFICATION : Clôture manuelle AUJOURD'HUI ?
-    // On s'assure de ne regarder que les pointages de la VRAIE journée en cours.
+    // 3. VÉRIFICATION : Clôture FINALE AUJOURD'HUI ? (Faite manuellement ou par le CRON)
     const { data: finalToday } = await supabase
       .from("pointages")
       .select("id")
@@ -228,23 +222,11 @@ router.all("/get-clock-status", async (req, res) => {
       .gte("heure", `${todayStr}T00:00:00`)
       .maybeSingle();
 
-    // S'il a expressément coché "Clôturer ma journée" AUJOURD'HUI, c'est fini.
     if (finalToday) {
       return res.json({ status: "DONE", day_finished: true });
     }
 
-    // 4. LOGIQUE DE CLÔTURE AUTOMATIQUE À 20H
-    // 🛑 SEULS les sédentaires (OFFICE) voient leur journée bloquée après 20h.
-    // ✅ Les DÉLÉGUÉS (MOBILE) ne sont JAMAIS bloqués, ils peuvent pointer jusqu'à 23h59.
-    if (isOffice && currentHour >= 20) {
-      return res.json({
-        status: "DONE",
-        day_finished: true,
-        message: "Système clôturé à 20h",
-      });
-    }
-
-    // 5. RÉCUPÉRER LE DERNIER POINTAGE POUR SAVOIR S'IL EST "IN" OU "OUT"
+    // 4. RÉCUPÉRER LE DERNIER POINTAGE
     const { data: lastRecord } = await supabase
       .from("pointages")
       .select("action, heure")
@@ -258,32 +240,32 @@ router.all("/get-clock-status", async (req, res) => {
 
     if (lastRecord) {
       const lastTimeUTC = new Date(lastRecord.heure);
-      const diffHours = (nowUTC - lastTimeUTC) / (1000 * 60 * 60); // Durée depuis le dernier pointage
+      const diffHours = (nowUTC - lastTimeUTC) / (1000 * 60 * 60); 
       
-      // On convertit aussi l'heure du dernier pointage à l'heure du Bénin pour la comparaison
       const lastTimeBenin = new Date(lastTimeUTC.getTime() + (1 * 60 * 60 * 1000));
       const lastDateStr = lastTimeBenin.toISOString().split("T")[0];
 
       if (lastRecord.action === "CLOCK_IN") {
-        // GARDIEN : A le droit de pointer à cheval sur minuit (ex: Nuit)
-        if (isGuard) {
-          if (diffHours < 18) status = "IN";
-        }
-        // OFFICE / MOBILE :
-        else {
-          // Si l'entrée date bien d'aujourd'hui, il est IN.
-          // S'il a oublié de sortir hier, la date est différente -> on le reset à OUT pour qu'il puisse reprendre.
-          if (lastDateStr === todayStr && diffHours < 14) {
-            status = "IN";
-          } else {
+        // Définition des limites de shift (doit correspondre au CRON)
+        let maxShift = 14;
+        if (isGuard) maxShift = 17;
+
+        if (diffHours >= maxShift) {
+            // S'il a dépassé la limite absolue, le CRON va le fermer (ou l'a déjà fermé)
+            // On débloque le bouton pour qu'il puisse reprendre une nouvelle journée normale.
             status = "OUT";
-          }
+        } else {
+            // S'il est entré HIER et qu'il n'est pas Gardien de nuit, c'est un oubli.
+            if (!isGuard && lastDateStr !== todayStr) {
+                status = "OUT";
+            } else {
+                status = "IN"; // Il est en poste normal
+            }
         }
       } 
       else if (lastRecord.action === "CLOCK_OUT") {
-        // S'il vient de sortir aujourd'hui :
-        // - OFFICE : Une sortie = Fin de journée par défaut.
-        // - MOBILE : Peut faire plusieurs visites dans la journée, donc "OUT" (prêt à re-rentrer).
+        // Sédentaires (OFFICE) : 1 Sortie = Fin de journée.
+        // Mobiles / Gardiens : Peuvent faire plusieurs Entrées/Sorties.
         if (isOffice && lastDateStr === todayStr) {
           status = "DONE";
           isDayFinished = true;
@@ -304,8 +286,6 @@ router.all("/get-clock-status", async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
-
-
 
 
 router.all("/live-attendance", async (req, res) => {
