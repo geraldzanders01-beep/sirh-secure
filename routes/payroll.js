@@ -435,6 +435,34 @@ router.all("/mark-payroll-read", async (req, res) => {
   }
 });
 
+// --- MISE À JOUR DES CONSTANTES DE PAIE ---
+router.post("/update-config-salaries", async (req, res) => {
+    if (!checkPerm(req, "can_see_payroll") && !checkPerm(req, "can_manage_config")) {
+        return res.status(403).json({ error: "Accès refusé" });
+    }
+
+    const { cnss, irpp } = req.body;
+
+    try {
+        // Met à jour la CNSS
+        await supabase.from("salaries_config").update({ value_number: parseFloat(cnss) }).eq("key_code", "CNSS_EMPLOYEE_RATE");
+        // Met à jour l'IRPP
+        await supabase.from("salaries_config").update({ value_number: parseFloat(irpp) }).eq("key_code", "IRPP_BASE_RATE");
+
+        // Log d'audit
+        await supabase.from("logs").insert([{
+            agent: req.user.nom || "RH",
+            action: "PARAMÈTRES PAIE",
+            details: `Mise à jour des taux : CNSS (${cnss}%) | IRPP (${irpp}%)`
+        }]);
+
+        return res.json({ status: "success" });
+    } catch (e) {
+        return res.status(500).json({ error: e.message });
+    }
+});
+
+
 router.all("/read-config-salaries", async (req, res) => {
   const { data, error } = await supabase
     .from("salaries_config")
