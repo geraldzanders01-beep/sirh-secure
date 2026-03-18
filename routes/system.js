@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const supabase = require("../supabaseClient");
-const { checkPerm, sendEmailAPI, calculateAutoClose } = require("../utils");
+const { checkPerm, sendEmailAPI, calculateAutoClose, sendPushNotification } = require("../utils");
 
 // --- LECTURE DES LOGS ---
 router.all("/read-logs", async (req, res) => {
@@ -572,15 +572,16 @@ router.all("/read-flash", async (req, res) => {
   return res.json(mapped);
 });
 
+
+// --- DIFFUSER UNE ANNONCE (AVEC NOTIFICATION PUSH NATIVE) ---
 router.all("/write-flash", async (req, res) => {
-  if (!req.user.permissions || !req.user.permissions.can_send_announcements) {
-    return res
-      .status(403)
-      .json({ error: "Accès refusé à la diffusion d'annonces" });
+  if (!checkPerm(req, "can_send_announcements")) {
+    return res.status(403).json({ error: "Accès refusé à la diffusion d'annonces" });
   }
 
   const { message, type, sender, date_expiration } = req.body;
 
+  // 1. Insertion dans la base de données pour l'affichage interne
   const { error } = await supabase.from("flash_messages").insert([
     {
       message,
@@ -592,13 +593,46 @@ router.all("/write-flash", async (req, res) => {
 
   if (error) throw error;
 
-  console.log(
-    `📢 Nouvelle annonce de ${sender} : ${message.substring(0, 30)}...`,
-  );
+  // ============================================================
+  // 🔥 NOUVEAU : ENVOI DE LA NOTIFICATION PUSH À TOUS LES AGENTS
+  // ============================================================
+  try {
+    // 1. On récupère la liste de tous les utilisateurs actifs
+    const { data: users } = await supabase.from('app_users').select('id');
+
+    if (users && users.length > 0) {
+        const notificationTitle = `📢 ANNONCE : ${type.toUpperCase()}`;
+        const notificationBody = message.substring(0, 100) + (message.length > 100 ? '...' : '');
+        
+        // On définit l'icône selon l'urgence pour le fun (Optionnel)
+        let emoji = "ℹ️";
+        if (type === "Urgent") emoji = "🚨";
+        if (type === "Maintenance") emoji = "🛠️";
+
+        // 2. On tire le "missile" Push vers chaque utilisateur enregistré
+        users.forEach(user => {
+            sendPushNotification(
+                user.id, 
+                `${emoji} ${notificationTitle}`, 
+                notificationBody, 
+                "/" // Redirige vers l'accueil au clic
+            );
+        });
+        
+        console.log(`📡 Notifications Push envoyées à ${users.length} appareils.`);
+    }
+  } catch (pushErr) {
+    console.error("Erreur lors du déclenchement du Push global:", pushErr.message);
+    // On ne bloque pas la réponse HTTP si le Push échoue
+  }
+
+  console.log(`📢 Nouvelle annonce de ${sender} enregistrée.`);
   return res.json({ status: "success" });
 });
 
-// --- MAINTENANCE ARCHIVES ---
+
+
+
 // --- MAINTENANCE ARCHIVES ---
 router.all("/run-archiving-job", async (req, res) => {
   if (!checkPerm(req, "can_manage_config"))
