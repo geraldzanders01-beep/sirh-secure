@@ -3,19 +3,31 @@ const router = express.Router();
 const supabase = require("../supabaseClient");
 const { checkPerm, getDistanceInMeters } = require("../utils");
 
+
+
 router.all("/clock", async (req, res) => {
-if (!checkPerm(req, 'can_clock')) return res.status(403).json({ error: "Interdit" });
-    
-    // 1. Récupération des données envoyées par le front
+    if (!checkPerm(req, 'can_clock')) return res.status(403).json({ error: "Interdit" });
+
+    // 1. Récupération sécurisée des données
+    // On extrait gps séparément pour vérifier s'il existe avant de faire le .split()
     const { 
         id, action: clockAction, gps, ip, outcome, report, 
         is_last_exit, presentedProducts, time, 
         schedule_id, forced_location_id, 
         prescripteur_id, contact_nom_libre 
     } = req.body;
-    
+
+    // --- SÉCURITÉ ANTI-CRASH ---
+    if (!gps || typeof gps !== 'string') {
+        console.error("❌ Erreur: Données GPS manquantes ou invalides");
+        return res.status(400).json({ error: "Localisation GPS requise pour pointer." });
+    }
+    // ---------------------------
+
     const eventTime = time ? new Date(time) : new Date();
     const today = eventTime.toISOString().split('T')[0];
+    
+    // Maintenant on peut split sans risque car on a vérifié que gps existe
     const [userLat, userLon] = gps.split(',').map(parseFloat);
     
     let proofUrl = null;
@@ -33,7 +45,7 @@ if (!checkPerm(req, 'can_clock')) return res.status(403).json({ error: "Interdit
     try {
         // 3. Identification de l'employé
         const { data: emp, error: empErr } = await supabase.from('employees').select('employee_type').eq('id', id).single();
-        if (empErr) throw new Error("Employé non trouvé");
+        if (empErr || !emp) throw new Error("Employé non trouvé");
         
         const isMobileAgent = (emp.employee_type === 'MOBILE');
 
@@ -52,7 +64,6 @@ if (!checkPerm(req, 'can_clock')) return res.status(403).json({ error: "Interdit
         // 5. LOGIQUE GPS (Recherche du lieu)
         let detectedLoc = null;
         
-        // Si c'est un pointage agenda forcé
         if (forced_location_id && clockAction === 'CLOCK_IN') {
             const { data: loc } = await supabase.from('mobile_locations').select('*').eq('id', forced_location_id).single();
             if (loc) {
@@ -62,7 +73,6 @@ if (!checkPerm(req, 'can_clock')) return res.status(403).json({ error: "Interdit
             }
         }
 
-        // Sinon recherche automatique
         if (!detectedLoc) {
             const [zonesRes, mobilesRes] = await Promise.all([
                 supabase.from('zones').select('*').eq('actif', true),
@@ -82,8 +92,7 @@ if (!checkPerm(req, 'can_clock')) return res.status(403).json({ error: "Interdit
 
         if (!detectedLoc) return res.status(403).json({ error: "Vous n'êtes sur aucun site autorisé." });
 
-        // 6. DÉFINITION CLÔTURE (isFinalOut)
-        // Mobile : Final seulement si coché. Fixe : Toujours final à la sortie.
+        // 6. DÉFINITION CLÔTURE
         const isFinalOut = (clockAction === 'CLOCK_OUT' && (is_last_exit === 'true' || is_last_exit === true || !isMobileAgent));
 
         // 7. ENREGISTREMENT POINTAGE
@@ -94,7 +103,7 @@ if (!checkPerm(req, 'can_clock')) return res.status(403).json({ error: "Interdit
             gps_lat: userLat,
             gps_lon: userLon,
             zone_detectee: detectedLoc.name,
-            ip_address: ip,
+            ip_address: ip || "0.0.0.0",
             statut: 'Validé',
             is_final_out: isFinalOut
         }]);
@@ -154,8 +163,6 @@ if (!checkPerm(req, 'can_clock')) return res.status(403).json({ error: "Interdit
         return res.status(500).json({ error: err.message });
     }
 });
-
-
 
            
            // --- VÉRIFICATION ÉTAT POINTAGE (SIMPLIFIÉ) ---
