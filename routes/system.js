@@ -925,6 +925,36 @@ router.all("/check-closing-time", async (req, res) => {
 });
 
 
+const webpush = require('web-push');
+
+// Configuration de web-push avec tes clés (il les lit depuis .env)
+webpush.setVapidDetails(
+  'mailto:support@tondomaine.com',
+  process.env.VAPID_PUBLIC_KEY,
+  process.env.VAPID_PRIVATE_KEY
+);
+
+// --- ENREGISTRER UN TÉLÉPHONE POUR LES PUSH ---
+router.post("/subscribe-push", async (req, res) => {
+    const { subscription, user_id } = req.body;
+
+    try {
+        // On enregistre l'abonnement dans Supabase
+        // auth et p256dh sont cachés dans l'objet keys de la souscription
+        const { error } = await supabase.from('push_subscriptions').upsert({
+            user_id: user_id,
+            endpoint: subscription.endpoint,
+            p256dh: subscription.keys.p256dh,
+            auth: subscription.keys.auth
+        }, { onConflict: 'endpoint' });
+
+        if (error) throw error;
+        res.status(201).json({ status: "success" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // --- LIRE LES LABELS DYNAMIQUES ---
 router.get("/read-labels", async (req, res) => {
   try {
