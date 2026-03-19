@@ -30,8 +30,6 @@ const { checkPerm, getDistanceInMeters } = require("../utils");
     // 2. EXTRACTION ET NETTOYAGE DES DONNÉES (Gestion Robuste Multer/FormData)
     // Fonction helper pour extraire une valeur unique même si c'est un tableau
     const getVal = (val) => Array.isArray(val) ? val[0] : val;
-
-    const id = getVal(req.body.id || req.body.employee_id);
     const clockAction = getVal(req.body.action);
     const gps = getVal(req.body.gps) || "0,0";
     const time = getVal(req.body.time);
