@@ -10,6 +10,23 @@ const { checkPerm, getDistanceInMeters } = require("../utils");
         return res.status(403).json({ error: "Vous n'avez pas l'autorisation de pointer." });
     }
 
+   // --- FIX : Récupération ultra-robuste ---
+    // Parfois, multer met les données dans req.body, parfois il faut forcer la lecture
+    // On prend l'ID là où il se trouve
+    const id = req.body.id || req.query.id || (req.body.employee_id);
+    console.log(`🔍 REQUETE : Pointage pour ID: [${id}]`);
+    console.log(`🔍 METHODE: ${req.method}`);
+    console.log(`🔍 HEADERS: ${JSON.stringify(req.headers)}`);
+    console.log("🔍 BODY: ", req.body);
+    // Ajout d'un log pour voir ce qui arrive réellement
+    console.log("DEBUG BACKEND - Body:", req.body);
+    console.log("DEBUG BACKEND - ID reçu:", id);
+
+    if (!id || id === "undefined" || id === "null") {
+        console.error("❌ Erreur: ID employé manquant ou invalide.  Reçu:", req.body);
+        return res.status(400).json({ error: "Identifiant employé manquant." });
+    }
+  
     // 2. EXTRACTION ET NETTOYAGE DES DONNÉES (Gestion Robuste Multer/FormData)
     // Fonction helper pour extraire une valeur unique même si c'est un tableau
     const getVal = (val) => Array.isArray(val) ? val[0] : val;
