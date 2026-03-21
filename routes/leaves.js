@@ -8,43 +8,80 @@ const { checkPerm, sendEmailAPI, sendPushNotification } = require("../utils");
 // ============================================================
 
 // A. Demande de congé par l'employé
+// A. Demande de congé par l'employé
 router.all("/leave", async (req, res) => {
+  // 1. HELPER DE NETTOYAGE (Pour éviter les [object Object] ou les tableaux)
+  const getVal = (val) => Array.isArray(val) ? val[0] : val;
+
   const b = req.body;
+  const empId = getVal(b.employee_id);
+  const type = getVal(b.type);
+  const dateDebut = getVal(b.date_debut);
+  const dateFin = getVal(b.date_fin);
+  const motif = getVal(b.motif);
+  const nom = getVal(b.nom);
+
+  // LOG DE DIAGNOSTIC : Pour voir en direct sur Render ce qui arrive
+  console.log(`📥 RECU CONGÉ - ID: ${empId}, Nom: ${nom}, Type: ${type}`);
+
+  // SÉCURITÉ : Si l'ID est manquant, on arrête tout de suite
+  if (!empId || empId === "undefined") {
+    console.error("❌ Erreur : employee_id est manquant dans le body", b);
+    return res.status(400).json({ error: "Identifiant employé manquant." });
+  }
+
   let justifUrl = null;
 
-  // ✅ LA CORRECTION EST ICI : On vérifie que req.files existe avant de chercher dedans
-  const justifFile = (req.files && Array.isArray(req.files)) 
-    ? req.files.find((f) => f.fieldname === "justificatif") 
-    : null;
+  // 2. GESTION DU FICHIER (S'il y en a un)
+  try {
+    const justifFile = (req.files && Array.isArray(req.files)) 
+      ? req.files.find((f) => f.fieldname === "justificatif") 
+      : null;
 
-  if (justifFile) {
-    const fileName = `justif_${Date.now()}_${justifFile.originalname.replace(/\s/g, "_")}`;
-    await supabase.storage
-      .from("documents")
-      .upload(fileName, justifFile.buffer);
-    
-    justifUrl = supabase.storage.from("documents").getPublicUrl(fileName).data.publicUrl;
+    if (justifFile) {
+      // On nettoie le nom du fichier (pas d'espaces, pas d'accents)
+      const safeName = `${Date.now()}_${justifFile.originalname.replace(/[^a-z0-9.]/gi, '_')}`;
+      
+      const { data: upData, error: upErr } = await supabase.storage
+        .from("documents")
+        .upload(safeName, justifFile.buffer, {
+          contentType: justifFile.mimetype,
+          upsert: true
+        });
+      
+      if (upErr) throw upErr;
+
+      const { data: publicUrlData } = supabase.storage
+        .from("documents")
+        .getPublicUrl(safeName);
+      
+      justifUrl = publicUrlData.publicUrl;
+      console.log("📎 Fichier uploadé :", justifUrl);
+    }
+
+    // 3. INSERTION DANS LA BASE DE DONNÉES
+    const { error: dbErr } = await supabase.from("conges").insert([
+      {
+        employee_id: empId,
+        type: type,
+        date_debut: dateDebut,
+        date_fin: dateFin,
+        motif: motif,
+        employees_nom: nom,
+        justificatif_url: justifUrl,
+        statut: "En attente",
+      },
+    ]);
+
+    if (dbErr) throw dbErr;
+
+    console.log("✅ Congé enregistré avec succès en base.");
+    return res.json({ status: "success" });
+
+  } catch (err) {
+    console.error("💥 Erreur lors de la demande de congé :", err.message);
+    return res.status(500).json({ error: err.message });
   }
-
-  const { error } = await supabase.from("conges").insert([
-    {
-      employee_id: b.employee_id,
-      type: b.type,
-      date_debut: b.date_debut,
-      date_fin: b.date_fin,
-      motif: b.motif,
-      employees_nom: b.nom,
-      justificatif_url: justifUrl,
-      statut: "En attente",
-    },
-  ]);
-
-  if (error) {
-    console.error("Erreur insertion congé:", error);
-    return res.status(500).json({ error: error.message });
-  }
-  
-  return res.json({ status: "success" });
 });
 
 // ============================================================
