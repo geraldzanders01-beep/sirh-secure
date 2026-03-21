@@ -64,8 +64,8 @@ app.use(cors({
     credentials: true
 }));
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '15mb' })); // Autorise les gros payloads JSON (Images)
+app.use(express.urlencoded({ limit: '15mb', extended: true }));
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
