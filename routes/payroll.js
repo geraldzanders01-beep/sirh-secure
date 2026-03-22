@@ -568,64 +568,93 @@ router.all("/process-payroll-advanced", async (req, res) => {
 
 
 router.all("/compute-automated-payroll", async (req, res) => {
-    const { month, year } = req.query;
-    const startDate = `${year}-${month}-01T00:00:00`;
-    const endDate = `${year}-${month}-31T23:59:59`;
+    try {
+        const { month, year } = req.query;
+        if (!month || !year) return res.status(400).json({ error: "Mois et année requis" });
 
-    // 1. On récupère les règles de cette entreprise
-    const { data: rules } = await supabase.from('payroll_rules').select('*').eq('is_active', true);
-    
-    // 2. On récupère les employés
-    const { data: employees } = await supabase.from('employees').select('id, nom, employee_type, departement');
+        // 1. CALCUL INTELLIGENT DES DATES (Gère 28, 30 et 31 jours)
+        const formattedMonth = String(month).padStart(2, '0');
+        const startDate = `${year}-${formattedMonth}-01T00:00:00`;
+        
+        // On prend le jour 0 du mois suivant pour avoir le dernier jour du mois actuel
+        const lastDay = new Date(year, parseInt(month), 0).getDate();
+        const endDate = `${year}-${formattedMonth}-${lastDay}T23:59:59`;
 
-    const payrollDraft = [];
+        // 2. RÉCUPÉRATION DES DONNÉES DE BASE
+        const [rulesRes, empsRes] = await Promise.all([
+            supabase.from('payroll_rules').select('*').eq('is_active', true),
+            supabase.from('employees').select('id, nom, employee_type, departement').not('statut', 'ilike', '%Sortie%')
+        ]);
 
-    for (const emp of employees) {
-        // --- ÉTAPE A : Collecte des data réelles ---
-        const vCount = await Aggregators.countVisits(emp.id, startDate, endDate);
-        const hCount = await Aggregators.calculateHours(emp.id, startDate, endDate);
-        const lCount = await Aggregators.countLates(emp.id, startDate, endDate);
+        const rules = rulesRes.data || [];
+        const employees = empsRes.data || [];
+        const payrollDraft = [];
 
-        let bonus = 0;
-        let deductions = 0;
-        let details = [];
+        // Fonction de comparaison sécurisée (Remplace eval)
+        const checkCondition = (val1, operator, val2) => {
+            const v1 = parseFloat(val1);
+            const v2 = parseFloat(val2);
+            if (operator === '>') return v1 > v2;
+            if (operator === '<') return v1 < v2;
+            if (operator === '>=') return v1 >= v2;
+            if (operator === '<=') return v1 <= v2;
+            if (operator === '==') return v1 === v2;
+            return false;
+        };
 
-        // --- ÉTAPE B : Application du moteur de règles ---
-        rules.forEach(rule => {
-            let sourceValue = 0;
-            if (rule.data_source === 'VISITS') sourceValue = vCount;
-            if (rule.data_source === 'ATTENDANCE') sourceValue = hCount;
-            if (rule.data_source === 'LATE') sourceValue = lCount;
+        // 3. BOUCLE DE CALCUL OPTIMISÉE
+        for (const emp of employees) {
+            // On lance les 3 compteurs en parallèle pour gagner en vitesse
+            const [vCount, hCount, lCount] = await Promise.all([
+                Aggregators.countVisits(emp.id, startDate, endDate),
+                Aggregators.calculateHours(emp.id, startDate, endDate),
+                Aggregators.countLates(emp.id, startDate, endDate)
+            ]);
 
-            // On vérifie la condition (ex: si visites > 50)
-            const isTriggered = eval(`${sourceValue} ${rule.condition_operator} ${rule.condition_value}`);
+            let bonus = 0;
+            let deductions = 0;
+            let details = [];
 
-            if (isTriggered) {
-                let amount = 0;
-                if (rule.action_type === 'ADD_FIXED') amount = rule.action_value;
-                if (rule.action_type === 'MULTIPLY') amount = sourceValue * rule.action_value;
-                
-                if (amount > 0) {
-                    bonus += amount;
-                    details.push(`${rule.rule_name}: +${amount} F`);
-                } else if (amount < 0) {
-                    deductions += Math.abs(amount);
-                    details.push(`${rule.rule_name}: ${amount} F`);
+            // 4. APPLICATION DU MOTEUR DE RÈGLES
+            rules.forEach(rule => {
+                let sourceValue = 0;
+                if (rule.data_source === 'VISITS') sourceValue = vCount;
+                if (rule.data_source === 'ATTENDANCE') sourceValue = hCount;
+                if (rule.data_source === 'LATE') sourceValue = lCount;
+
+                // Utilisation de notre fonction de comparaison sécurisée
+                if (checkCondition(sourceValue, rule.condition_operator, rule.condition_value)) {
+                    let amount = 0;
+                    if (rule.action_type === 'ADD_FIXED') amount = parseFloat(rule.action_value);
+                    if (rule.action_type === 'MULTIPLY') amount = sourceValue * parseFloat(rule.action_value);
+                    
+                    if (amount > 0) {
+                        bonus += amount;
+                        details.push(`${rule.rule_name}: +${Math.round(amount)} F`);
+                    } else if (amount < 0) {
+                        deductions += Math.abs(amount);
+                        details.push(`${rule.rule_name}: -${Math.round(Math.abs(amount))} F`);
+                    }
                 }
-            }
-        });
+            });
 
-        payrollDraft.push({
-            employee_id: emp.id,
-            nom: emp.nom,
-            stats: { visites: vCount, heures: hCount, retards: lCount },
-            computed_bonus: bonus,
-            computed_deductions: deductions,
-            explanation: details.join(' | ')
-        });
+            payrollDraft.push({
+                employee_id: emp.id,
+                nom: emp.nom,
+                stats: { visites: vCount, heures: hCount, retards: lCount },
+                computed_bonus: Math.round(bonus),
+                computed_deductions: Math.round(deductions),
+                explanation: details.length > 0 ? details.join(' | ') : "Aucune règle appliquée"
+            });
+        }
+
+        console.log(`📊 Calcul auto terminé pour ${employees.length} employés (${month}/${year})`);
+        return res.json(payrollDraft);
+
+    } catch (err) {
+        console.error("❌ Erreur calcul auto:", err.message);
+        return res.status(500).json({ error: "Erreur technique lors du calcul. Vérifiez les logs." });
     }
-
-    return res.json(payrollDraft);
 });
 
 module.exports = router;
