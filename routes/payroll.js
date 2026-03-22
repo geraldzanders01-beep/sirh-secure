@@ -2,6 +2,8 @@ const express = require("express");
 const router = express.Router();
 const supabase = require("../supabaseClient");
 const { checkPerm, sendPushNotification } = require("../utils"); 
+const Aggregators = require("../calculators");
+
 
 // Outils pour la génération des PDF
 const libre = require("libreoffice-convert");
