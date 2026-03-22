@@ -90,20 +90,17 @@ router.all("/clock", async (req, res) => {
             if (!upErr) proofUrl = supabase.storage.from('documents').getPublicUrl(fileName).data.publicUrl;
         }
 
-      // 6. LOGIQUE GPS (Détection du lieu/zone avec Rayon Intelligent)
+    // 6. LOGIQUE GPS (Version Vice-Versa : Synchronisation Totale PC/Mobile)
         let detectedLocName = "Zone Mobile";
         let detectedLocId = null;
 
-        // --- DÉTECTION DU TYPE D'APPAREIL ---
         const userAgent = req.headers['user-agent'] || "";
         const isMobileDevice = /Mobile|Android|iPhone|iPad/i.test(userAgent);
-        // ------------------------------------
 
         if (forced_location_id && clockAction === 'CLOCK_IN') {
             const { data: loc } = await supabase.from('mobile_locations').select('*').eq('id', forced_location_id).single();
             if (loc) {
                 const dist = getDistanceInMeters(userLat, userLon, loc.latitude, loc.longitude);
-                // Pour une mission forcée (souvent terrain), on reste sur le rayon de la base
                 if (dist <= (loc.radius || 100)) {
                     detectedLocName = loc.name;
                     detectedLocId = loc.id;
@@ -116,11 +113,9 @@ router.all("/clock", async (req, res) => {
             ]);
 
             let allPlaces = [];
-            // On marque les "zones" comme étant des bureaux (isOffice: true)
             if (zonesRes.data) zonesRes.data.forEach(z => {
                 allPlaces.push({ id: z.id, name: z.nom, lat: z.latitude, lon: z.longitude, radius: z.rayon, isOffice: true });
             });
-            // On marque les lieux mobiles comme du terrain (isOffice: false)
             if (mobilesRes.data) mobilesRes.data.forEach(m => {
                 allPlaces.push({ id: m.id, name: m.name, lat: m.latitude, lon: m.longitude, radius: m.radius, isOffice: false });
             });
@@ -128,23 +123,27 @@ router.all("/clock", async (req, res) => {
             for (let loc of allPlaces) {
                 const dist = getDistanceInMeters(userLat, userLon, loc.lat, loc.lon);
                 
-                // --- CALCUL DU RAYON EFFECTIF ---
+                // --- CALCUL DU RAYON AVEC GESTION DU VICE-VERSA ---
                 let effectiveRadius = loc.radius || 100;
 
-                // Si c'est un Bureau (Zone) ET que l'utilisateur est sur PC (pas mobile)
-                if (loc.isOffice && !isMobileDevice) {
-                    effectiveRadius = 1500; // On applique la tolérance magique pour les Ordis
-                } 
-                // Si c'est un Mobile (Téléphone), on force un rayon strict même si la base dit plus
-                else if (isMobileDevice) {
-                    effectiveRadius = 100; 
+                if (loc.isOffice) {
+                    // Pour les bureaux, on accepte l'écart de 1.5km pour TOUT LE MONDE.
+                    // Cela règle le problème si le point a été créé sur PC et qu'on pointe sur Mobile (ou l'inverse).
+                    effectiveRadius = 1500; 
+                } else {
+                    // Pour le terrain (Pharmacies, etc.), on reste strict sur Mobile.
+                    if (isMobileDevice) {
+                        effectiveRadius = 100; 
+                    } else {
+                        effectiveRadius = 1500; // Tolérance si un manager vérifie sur PC
+                    }
                 }
-                // --------------------------------
+                // ---------------------------------------------------
 
                 if (dist <= effectiveRadius) {
                     detectedLocName = loc.name;
-                    detectedLocId = loc.isOffice ? null : loc.id; // On ne garde l'ID que pour les lieux terrain
-                    console.log(`📍 Zone détectée : ${loc.name} (Appareil: ${isMobileDevice ? 'Mobile' : 'PC'}, Rayon: ${effectiveRadius}m)`);
+                    detectedLocId = loc.isOffice ? null : loc.id;
+                    console.log(`✅ Pointage validé : ${loc.name} | Appareil: ${isMobileDevice ? 'Mobile' : 'PC'} | Distance: ${Math.round(dist)}m | Rayon utilisé: ${effectiveRadius}m`);
                     break;
                 }
             }
