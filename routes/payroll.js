@@ -506,4 +506,60 @@ router.all("/calculate-payroll-dynamic", async (req, res) => {
     return res.json({ totalPrime: totalPrime });
 });
 
+
+router.all("/process-payroll-advanced", async (req, res) => {
+    const { month, year } = req.query;
+
+    // 1. Récupérer toutes les règles
+    const { data: rules } = await supabase.from('payroll_rules').select('*');
+
+    // 2. Récupérer les employés
+    const { data: employees } = await supabase.from('employees').select('*');
+
+    const results = [];
+
+    for (let emp of employees) {
+        let automaticBonus = 0;
+        let automaticDeduction = 0;
+
+        // --- PHASE D'AGRÉGATION DES DONNÉES ---
+        // On calcule les compteurs de l'employé pour le mois en cours
+        const stats = {
+            VISITS_COUNT: await countVisits(emp.id, month, year),
+            TOTAL_HOURS: await calculateMonthlyHours(emp.id, month, year),
+            LATE_COUNT: await countLates(emp.id, month, year)
+        };
+
+        // --- PHASE D'APPLICATION DES RÈGLES ---
+        rules.forEach(rule => {
+            let employeeValue = 0;
+            
+            // On mappe la source de la règle à notre objet stats
+            if (rule.data_source === 'VISITS') employeeValue = stats.VISITS_COUNT;
+            if (rule.data_source === 'ATTENDANCE') employeeValue = stats.TOTAL_HOURS;
+            if (rule.data_source === 'LATE_COUNT') employeeValue = stats.LATE_COUNT;
+
+            // Vérification de la condition
+            let isTriggered = false;
+            if (rule.condition_operator === '>' && employeeValue > rule.threshold) isTriggered = true;
+            if (rule.condition_operator === '==' && employeeValue == rule.threshold) isTriggered = true;
+
+            if (isTriggered) {
+                if (rule.action_type === 'ADD_FIXED') automaticBonus += rule.action_value;
+                if (rule.action_type === 'MULTIPLY') automaticBonus += (employeeValue * rule.action_value);
+                if (rule.action_type === 'DEDUCT') automaticDeduction += rule.action_value;
+            }
+        });
+
+        results.push({
+            employee_id: emp.id,
+            nom: emp.nom,
+            bonus: automaticBonus,
+            deductions: automaticDeduction,
+            net_to_add: automaticBonus - automaticDeduction
+        });
+    }
+
+    return res.json(results);
+});
 module.exports = router;
