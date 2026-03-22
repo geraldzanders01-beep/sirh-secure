@@ -178,25 +178,48 @@ router.all("/clock", async (req, res) => {
                 }]);
                 await supabase.from('employees').update({ statut: 'En Poste' }).eq('id', emp.id);
             } 
-            else if (clockAction === 'CLOCK_OUT') {
+else if (clockAction === 'CLOCK_OUT') {
+                // 1. On cherche la visite qui n'a pas encore de date de sortie
                 const { data: lastVisit } = await supabase.from('visit_reports')
-                    .select('id, check_in_time').eq('employee_id', emp.id).is('check_out_time', null)
-                    .order('check_in_time', { ascending: false }).limit(1).maybeSingle();
+                    .select('id, check_in_time')
+                    .eq('employee_id', emp.id)
+                    .is('check_out_time', null)
+                    .order('check_in_time', { ascending: false })
+                    .limit(1)
+                    .maybeSingle();
 
                 if (lastVisit) {
                     const dur = Math.round((eventTime - new Date(lastVisit.check_in_time)) / 60000);
-                    const prods = typeof rawProducts === 'string' ? JSON.parse(rawProducts) : (rawProducts || []);
+                    
+                    // Sécurité pour le format des produits
+                    let productsArray = [];
+                    if (rawProducts) {
+                        try {
+                            productsArray = typeof rawProducts === 'string' ? JSON.parse(rawProducts) : rawProducts;
+                        } catch(e) { productsArray = []; }
+                    }
 
-                    await supabase.from('visit_reports').update({
-                        check_out_time: eventTime.toISOString(), outcome: outcome || 'VU',
-                        notes: report || '', proof_url: proofUrl, duration_minutes: dur > 0 ? dur : 1,
-                        presented_products: prods, prescripteur_id: (prescripteur_id && prescripteur_id !== 'autre') ? prescripteur_id : null,
+                    // 2. MISE À JOUR DE LA VISITE AVEC LES INFOS DU FORMULAIRE
+                    const { error: updErr } = await supabase.from('visit_reports').update({
+                        check_out_time: eventTime.toISOString(),
+                        outcome: outcome || 'VU',
+                        notes: report || '',
+                        proof_url: proofUrl,
+                        duration_minutes: dur > 0 ? dur : 1,
+                        presented_products: productsArray,
+                        prescripteur_id: (prescripteur_id && prescripteur_id !== 'autre') ? prescripteur_id : null,
                         contact_nom_libre: contact_nom_libre || null
                     }).eq('id', lastVisit.id);
+                    
+                    if (updErr) console.error("Erreur update visite:", updErr.message);
                 }
-                if (isFinal) await supabase.from('employees').update({ statut: 'Actif' }).eq('id', emp.id);
+                
+                // Si l'utilisateur a coché "Clôturer ma journée" ou si c'est un sédentaire
+                if (isFinal) {
+                    await supabase.from('employees').update({ statut: 'Actif' }).eq('id', emp.id);
+                }
             }
-        } else {
+              else {
             await supabase.from('employees').update({ statut: clockAction === 'CLOCK_IN' ? 'En Poste' : 'Actif' }).eq('id', emp.id);
         }
 
@@ -861,6 +884,7 @@ router.all("/read-visit-reports", async (req, res) => {
                 `,
       { count: "exact" },
     );
+   query = query.not('check_out_time', 'is', null); // On ne montre que les visites TERMINEÉES
 
     // --- FILTRE DE SÉCURITÉ AMÉLIORÉ ---
     const isPersonalRequest = req.query.personal === "true"; // On vérifie si le front demande le mode perso
