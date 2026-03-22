@@ -450,4 +450,31 @@ router.all("/read-config-salaries", async (req, res) => {
   return res.json(data);
 });
 
+
+router.all("/calculate-payroll-dynamic", async (req, res) => {
+    // 1. On récupère les règles définies en base
+    const { data: rules } = await supabase.from('payroll_rules').select('*');
+    
+    // 2. On récupère les données de l'employé (Pointages + Statut)
+    const { employee_id } = req.body;
+    const { data: emp } = await supabase.from('employees').select('*').eq('id', employee_id).single();
+    
+    let totalPrime = 0;
+    
+    // 3. Moteur d'inférence simple
+    rules.forEach(rule => {
+        let isMatch = false;
+        
+        // Comparaison dynamique
+        if (rule.condition_operator === '==' && emp[rule.condition_field] == rule.condition_value) isMatch = true;
+        if (rule.condition_operator === '>' && emp[rule.condition_field] > parseFloat(rule.condition_value)) isMatch = true;
+        
+        if (isMatch) {
+            if (rule.action_type === 'ADD_FIXED') totalPrime += parseFloat(rule.action_value);
+        }
+    });
+
+    return res.json({ totalPrime: totalPrime });
+});
+
 module.exports = router;
