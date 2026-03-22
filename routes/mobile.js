@@ -1286,4 +1286,34 @@ router.all("/get-performance-report", async (req, res) => {
   return res.json(Object.values(stats));
 });
 
+
+
+router.all("/get-live-positions", async (req, res) => {
+    // 1. On ne donne accès qu'aux managers/admin
+    if (!checkPerm(req, "can_see_employees")) return res.status(403).json({ error: "Accès refusé" });
+
+    // 2. On récupère le dernier pointage de TOUS les employés actifs
+    // Une astuce SQL (DISTINCT ON) pour avoir juste la dernière position de chaque agent
+    const { data, error } = await supabase
+        .from('pointages')
+        .select(`
+            id, gps_lat, gps_lon, zone_detectee, action, heure,
+            employees(id, nom, poste, photo_url)
+        `)
+        .order('heure', { ascending: false });
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    // 3. Filtrer pour n'avoir que le dernier pointage par employé
+    const uniqueLocations = [];
+    const seen = new Set();
+    data.forEach(p => {
+        if (!seen.has(p.employee_id) && p.gps_lat && p.gps_lon) {
+            uniqueLocations.push(p);
+            seen.add(p.employee_id);
+        }
+    });
+
+    return res.json(uniqueLocations);
+});
 module.exports = router;
