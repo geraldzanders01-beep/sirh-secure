@@ -818,19 +818,7 @@ router.all("/delete-zone", async (req, res) => {
   return res.json({ status: "success" });
 });
 
-router.all("/add-zone", async (req, res) => {
-  if (!req.user.permissions || !req.user.permissions.can_manage_config) {
-    return res.status(403).json({ error: "Accès refusé à la configuration" });
-  }
 
-  const { data, error } = await supabase
-    .from("zones")
-    .select("*")
-    .order("created_at", { ascending: false });
-
-  if (error) throw error;
-  return res.json(data);
-});
 
 router.all("/read-config", async (req, res) => {
   const { data, error } = await supabase
