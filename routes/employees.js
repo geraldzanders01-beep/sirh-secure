@@ -152,18 +152,31 @@ router.all("/write", async (req, res) => {
 
   // --- F. ENVOI DE L'EMAIL DE BIENVENUE --- (CE BLOC RESTE INCHANGÉ)
   const emailSujet = `Bienvenue chez SIRH SECURE - Vos accès`;
-  const emailHtml = `
-        <div style="font-family: Arial, sans-serif; color: #333;">
-            <h2>Félicitations ${body.nom} !</h2>
-            <p>Votre profil collaborateur a été créé avec succès.</p>
-            <p>Voici vos identifiants pour accéder à votre espace :</p>
-            <div style="background: #f3f4f6; padding: 15px; border-radius: 8px; border: 1px solid #ddd;">
-                <p>🔗 <b>Lien :</b> <a href="https://dom4002.github.io/sirh-supabase-v2-frontend/">Accéder au Portail</a></p>
-                <p>👤 <b>Identifiant :</b> ${body.email}</p>
-                <p>🔑 <b>Mot de passe :</b> ${generatedPassword}</p>
-            </div>
-            <p style="color: #666; font-size: 12px; margin-top: 20px;">Ceci est un message automatique, merci de ne pas y répondre.</p>
-        </div>`;
+// Remplace la variable emailHtml dans la route "/write"
+const emailHtml = `
+<div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1e293b; max-width: 600px; margin: auto; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden;">
+    <div style="background-color: #0f172a; padding: 30px; text-align: center;">
+        <img src="https://cdn-icons-png.flaticon.com/512/9752/9752284.png" style="width: 70px; height: 70px;">
+        <h1 style="color: #ffffff; margin: 10px 0 0 0; font-size: 20px; letter-spacing: 2px; text-transform: uppercase;">SIRH SECURE</h1>
+    </div>
+    <div style="padding: 40px; line-height: 1.6;">
+        <h2 style="color: #0f172a; margin-top: 0;">Félicitations ${body.nom} !</h2>
+        <p>Votre profil collaborateur a été créé avec succès dans notre système de gestion.</p>
+        <p>Vous pouvez désormais accéder à votre portail sécurisé pour gérer vos pointages, vos congés et consulter vos documents RH.</p>
+        
+        <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 25px; margin: 30px 0;">
+            <p style="margin-top: 0; font-weight: bold; color: #64748b; font-size: 12px; text-transform: uppercase;">Vos identifiants d'accès</p>
+            <p style="margin: 10px 0;">🔗 <b>Lien :</b> <a href="https://sirh.cataria-systems.com" style="color: #2563eb; text-decoration: none;">Accéder au Portail</a></p>
+            <p style="margin: 10px 0;">👤 <b>Identifiant :</b> <span style="font-family: monospace;">${body.email}</span></p>
+            <p style="margin: 10px 0;">🔑 <b>Mot de passe :</b> <span style="font-family: monospace; background: #e2e8f0; padding: 2px 6px; border-radius: 4px;">${generatedPassword}</span></p>
+        </div>
+
+        <p style="font-size: 14px; color: #64748b;"><i>Note : Par mesure de sécurité, nous vous conseillons de modifier votre mot de passe dès votre première connexion.</i></p>
+    </div>
+    <div style="background-color: #f1f5f9; padding: 20px; text-align: center; font-size: 11px; color: #94a3b8;">
+        &copy; 2026 SIRH SECURE - Système de Gestion RH Intégré
+    </div>
+</div>`;
 
   await sendEmailAPI(body.email, emailSujet, emailHtml);
 
