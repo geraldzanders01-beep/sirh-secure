@@ -169,18 +169,32 @@ router.all("/clock", async (req, res) => {
         }]);
         if (ptgErr) throw ptgErr;
 
-// 8. LOGIQUE VISITE (Si Mobile)
+// 8. LOGIQUE VISITE (Si Mobile) - VERSION ROBUSTE
         if (isMobileAgent) {
             if (clockAction === 'CLOCK_IN') {
-                await supabase.from('visit_reports').insert([{
-                    employee_id: emp.id, check_in_time: eventTime.toISOString(),
-                    location_name: detectedLocName, location_id: detectedLocId, schedule_ref_id: schedule_id || null
+                console.log(`📝 Création d'un rapport de visite pour ${emp.nom} à ${detectedLocName}`);
+                
+                const { error: visitErr } = await supabase.from('visit_reports').insert([{
+                    employee_id: emp.id, 
+                    check_in_time: eventTime.toISOString(),
+                    location_name: detectedLocName,
+                    location_id: detectedLocId || null, // S'assure que c'est null et pas undefined
+                    schedule_ref_id: schedule_id || null,
+                    statut_visite: 'EN_COURS' // Optionnel: pour filtrage facile
                 }]);
+
+                if (visitErr) {
+                    console.error("❌ Erreur création visite Supabase:", visitErr.message);
+                    // On ne bloque pas le pointage, mais on log l'erreur
+                }
+
                 await supabase.from('employees').update({ statut: 'En Poste' }).eq('id', emp.id);
             } 
             else if (clockAction === 'CLOCK_OUT') {
-                // 1. On cherche la visite qui n'a pas encore de date de sortie
-                const { data: lastVisit } = await supabase.from('visit_reports')
+                console.log(`📝 Clôture de visite pour ${emp.nom}`);
+
+                // A. On cherche la visite ouverte (sans date de sortie) la plus récente
+                const { data: lastVisit, error: fetchErr } = await supabase.from('visit_reports')
                     .select('id, check_in_time')
                     .eq('employee_id', emp.id)
                     .is('check_out_time', null)
@@ -188,35 +202,38 @@ router.all("/clock", async (req, res) => {
                     .limit(1)
                     .maybeSingle();
 
+                if (fetchErr) console.error("❌ Erreur recherche visite:", fetchErr.message);
+
                 if (lastVisit) {
                     const dur = Math.round((eventTime - new Date(lastVisit.check_in_time)) / 60000);
                     
+                    // Sécurité formatage produits
                     let productsArray = [];
-                    if (rawProducts) {
-                        try {
-                            productsArray = typeof rawProducts === 'string' ? JSON.parse(rawProducts) : rawProducts;
-                        } catch(e) { productsArray = []; }
-                    }
+                    try {
+                        productsArray = typeof rawProducts === 'string' ? JSON.parse(rawProducts) : (rawProducts || []);
+                    } catch(e) { productsArray = []; }
 
+                    // B. Mise à jour de la ligne existante
                     const { error: updErr } = await supabase.from('visit_reports').update({
                         check_out_time: eventTime.toISOString(),
                         outcome: outcome || 'VU',
                         notes: report || '',
-                        proof_url: proofUrl,
+                        proof_url: proofUrl || null,
                         duration_minutes: dur > 0 ? dur : 1,
                         presented_products: productsArray,
                         prescripteur_id: (prescripteur_id && prescripteur_id !== 'autre') ? prescripteur_id : null,
                         contact_nom_libre: contact_nom_libre || null
                     }).eq('id', lastVisit.id);
-                    
-                    if (updErr) console.error("Erreur update visite:", updErr.message);
+
+                    if (updErr) console.error("❌ Erreur mise à jour visite Supabase:", updErr.message);
+                    else console.log("✅ Rapport de visite mis à jour avec succès.");
+                } else {
+                    console.warn("⚠️ Aucune visite ouverte trouvée pour clore le rapport.");
                 }
-                
-                if (isFinal) {
-                    await supabase.from('employees').update({ statut: 'Actif' }).eq('id', emp.id);
+
+                if (isFinal) await supabase.from('employees').update({ statut: 'Actif' }).eq('id', emp.id);
                 }
             }
-        } 
         else {
             // Logique pour les non-Mobile (Sédentaires)
             await supabase.from('employees').update({ statut: clockAction === 'CLOCK_IN' ? 'En Poste' : 'Actif' }).eq('id', emp.id);
