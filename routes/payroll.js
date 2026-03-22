@@ -451,6 +451,35 @@ router.all("/read-config-salaries", async (req, res) => {
 });
 
 
+
+
+// --- SAUVEGARDER UNE RÈGLE DE PAIE DYNAMIQUE ---
+router.post("/save-payroll-rule", async (req, res) => {
+    if (!checkPerm(req, "can_manage_config")) return res.status(403).json({ error: "Accès refusé" });
+
+    const { rule_name, condition_field, condition_operator, condition_value, action_type, action_value } = req.body;
+
+    const { error } = await supabase.from('payroll_rules').insert([{
+        rule_name,
+        condition_field,
+        condition_operator,
+        condition_value,
+        action_type,
+        action_value: parseFloat(action_value)
+    }]);
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ status: "success" });
+});
+
+// --- LISTER LES RÈGLES EXISTANTES ---
+router.get("/list-payroll-rules", async (req, res) => {
+    const { data, error } = await supabase.from('payroll_rules').select('*').order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json(data);
+});
+
+
 router.all("/calculate-payroll-dynamic", async (req, res) => {
     // 1. On récupère les règles définies en base
     const { data: rules } = await supabase.from('payroll_rules').select('*');
