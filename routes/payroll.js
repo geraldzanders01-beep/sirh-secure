@@ -564,4 +564,68 @@ router.all("/process-payroll-advanced", async (req, res) => {
 
     return res.json(results);
 });
+
+
+
+router.all("/compute-automated-payroll", async (req, res) => {
+    const { month, year } = req.query;
+    const startDate = `${year}-${month}-01T00:00:00`;
+    const endDate = `${year}-${month}-31T23:59:59`;
+
+    // 1. On récupère les règles de cette entreprise
+    const { data: rules } = await supabase.from('payroll_rules').select('*').eq('is_active', true);
+    
+    // 2. On récupère les employés
+    const { data: employees } = await supabase.from('employees').select('id, nom, employee_type, departement');
+
+    const payrollDraft = [];
+
+    for (const emp of employees) {
+        // --- ÉTAPE A : Collecte des data réelles ---
+        const vCount = await Aggregators.countVisits(emp.id, startDate, endDate);
+        const hCount = await Aggregators.calculateHours(emp.id, startDate, endDate);
+        const lCount = await Aggregators.countLates(emp.id, startDate, endDate);
+
+        let bonus = 0;
+        let deductions = 0;
+        let details = [];
+
+        // --- ÉTAPE B : Application du moteur de règles ---
+        rules.forEach(rule => {
+            let sourceValue = 0;
+            if (rule.data_source === 'VISITS') sourceValue = vCount;
+            if (rule.data_source === 'ATTENDANCE') sourceValue = hCount;
+            if (rule.data_source === 'LATE') sourceValue = lCount;
+
+            // On vérifie la condition (ex: si visites > 50)
+            const isTriggered = eval(`${sourceValue} ${rule.condition_operator} ${rule.condition_value}`);
+
+            if (isTriggered) {
+                let amount = 0;
+                if (rule.action_type === 'ADD_FIXED') amount = rule.action_value;
+                if (rule.action_type === 'MULTIPLY') amount = sourceValue * rule.action_value;
+                
+                if (amount > 0) {
+                    bonus += amount;
+                    details.push(`${rule.rule_name}: +${amount} F`);
+                } else if (amount < 0) {
+                    deductions += Math.abs(amount);
+                    details.push(`${rule.rule_name}: ${amount} F`);
+                }
+            }
+        });
+
+        payrollDraft.push({
+            employee_id: emp.id,
+            nom: emp.nom,
+            stats: { visites: vCount, heures: hCount, retards: lCount },
+            computed_bonus: bonus,
+            computed_deductions: deductions,
+            explanation: details.join(' | ')
+        });
+    }
+
+    return res.json(payrollDraft);
+});
+
 module.exports = router;
