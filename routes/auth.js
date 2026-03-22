@@ -104,16 +104,24 @@ router.all("/request-password-reset", async (req, res) => {
 
   // 2. S'il existe, on envoie le mail
   if (user) {
-    const html = `
-                    <div style="font-family: sans-serif; color: #1e293b; padding: 20px; border: 1px solid #e2e8f0; border-radius: 15px;">
-                        <h2 style="color: #2563eb;">Sécurité SIRH</h2>
-                        <p>Bonjour <b>${user.nom_complet}</b>,</p>
-                        <p>Vous avez demandé la réinitialisation de votre mot de passe. Voici votre code de vérification :</p>
-                        <div style="background: #f1f5f9; padding: 15px; text-align: center; font-size: 24px; font-weight: 900; letter-spacing: 5px; color: #0f172a; border-radius: 10px; margin: 20px 0;">
-                            ${code}
-                        </div>
-                        <p style="font-size: 12px; color: #64748b;">Ce code expirera dans 15 minutes. Si vous n'êtes pas à l'origine de cette demande, ignorez ce message.</p>
-                    </div>`;
+const html = `
+<div style="font-family: sans-serif; color: #1e293b; max-width: 500px; margin: auto; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden;">
+    <div style="background-color: #0f172a; padding: 20px; text-align: center;">
+        <img src="https://cdn-icons-png.flaticon.com/512/9752/9752284.png" style="width: 50px; height: 50px;">
+        <p style="color: #ffffff; margin: 5px 0 0 0; font-size: 14px; font-weight: bold; letter-spacing: 1px;">SÉCURITÉ SIRH</p>
+    </div>
+    <div style="padding: 30px; text-align: center;">
+        <h2 style="margin-top: 0;">Code de vérification</h2>
+        <p>Bonjour <b>${user.nom_complet}</b>,</p>
+        <p>Vous avez demandé la réinitialisation de votre mot de passe. Voici votre code sécurisé :</p>
+        
+        <div style="background: #f1f5f9; padding: 20px; margin: 25px 0; font-size: 32px; font-weight: 900; letter-spacing: 10px; color: #2563eb; border-radius: 12px; border: 2px dashed #cbd5e1;">
+            ${code}
+        </div>
+        
+        <p style="font-size: 12px; color: #94a3b8;">Ce code expirera dans 15 minutes.<br>Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.</p>
+    </div>
+</div>`;
 
     await sendEmailAPI(email, "Code de sécurité SIRH", html);
   }
