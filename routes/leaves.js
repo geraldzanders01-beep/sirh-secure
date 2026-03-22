@@ -128,38 +128,31 @@ const mapped = data.map((l) => ({
 
 
 // ============================================================
-// 6-C. ACTION SUR UN CONGÉ (VALIDATION AVEC PUSH NOTIFICATIONS) ✅
+// 6-C. ACTION SUR UN CONGÉ (VALIDATION AVEC PUSH + EMAIL PREMIUM) ✅
 // ============================================================
 router.all("/leave-action", async (req, res) => {
   if (!req.user.permissions || !req.user.permissions.can_see_employees) {
-    // Pour valider les congés des autres
-    return res
-      .status(403)
-      .json({ error: "Accès refusé à la gestion des congés" });
+    return res.status(403).json({ error: "Accès refusé à la gestion des congés" });
   }
 
   const { id, decision, agent } = req.body;
   console.log(`⚖️ Décision RH : ${decision} pour le congé ID ${id}`);
 
   // 1. Récupérer les détails du congé et de l'employé lié
-  // Note : on récupère user_associated_id pour envoyer le Push au bon compte
   const { data: conge, error: congeErr } = await supabase
     .from("conges")
     .select("*, employees(*)")
     .eq("id", id)
     .single();
 
-  if (congeErr || !conge) throw new Error("Congé introuvable");
+  if (congeErr || !conge) return res.status(404).json({ error: "Congé introuvable" });
 
   if (conge.statut === decision) {
     return res.json({ status: "success", message: "Déjà traité" });
   }
 
-  const employe = Array.isArray(conge.employees)
-    ? conge.employees[0]
-    : conge.employees;
-
-  if (!employe) throw new Error("Employé lié introuvable");
+  const employe = Array.isArray(conge.employees) ? conge.employees[0] : conge.employees;
+  if (!employe) return res.status(404).json({ error: "Employé lié introuvable" });
 
   const typeConge = conge.type;
 
@@ -171,9 +164,7 @@ router.all("/leave-action", async (req, res) => {
 
   while (loopDate <= fin) {
     const dayOfWeek = loopDate.getDay();
-    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-      nbJours++;
-    }
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) { nbJours++; }
     loopDate.setDate(loopDate.getDate() + 1);
   }
 
@@ -188,84 +179,102 @@ router.all("/leave-action", async (req, res) => {
   // 4. LOGIQUE DE MISE À JOUR DE L'EMPLOYÉ (Solde + Statut Global)
   if (decision === "Validé") {
     let updates = { statut: "Congé" };
-
     if (typeConge === "Congé Payé" || typeConge === "Maladie") {
       const soldeActuel = parseFloat(employe.solde_conges) || 0;
       updates.solde_conges = soldeActuel - nbJours;
     }
-
     await supabase.from("employees").update(updates).eq("id", employe.id);
-    console.log(`📉 Employé ${employe.nom} mis à jour : Statut=Congé, Déduit=${nbJours}j`);
   } else if (decision === "Refusé") {
-    await supabase
-      .from("employees")
-      .update({ statut: "Actif" })
-      .eq("id", employe.id);
+    await supabase.from("employees").update({ statut: "Actif" }).eq("id", employe.id);
   }
 
-  // ============================================================
-  // 🔥 NOUVEAU : DÉCLENCHEMENT DE LA NOTIFICATION PUSH NATIVE
-  // ============================================================
+  // 5. NOTIFICATION PUSH
   if (employe.user_associated_id) {
     const pushTitle = decision === "Validé" ? "✅ Congé Approuvé !" : "❌ Mise à jour Congé";
     const pushBody = decision === "Validé" 
       ? `Bonne nouvelle ${employe.nom}, votre demande pour ${typeConge} (${nbJours}j) a été validée.`
       : `Désolé ${employe.nom}, votre demande pour ${typeConge} n'a pas été acceptée.`;
     
-    // On envoie le signal au téléphone de l'employé
-    sendPushNotification(
-      employe.user_associated_id, 
-      pushTitle, 
-      pushBody, 
-      "/#my-profile" // Redirection vers son profil au clic
-    );
+    sendPushNotification(employe.user_associated_id, pushTitle, pushBody, "/#my-profile");
   }
 
-  // 5. ENVOI DE L'EMAIL (Logique existante)
-  let emailSubject = "";
-  let emailHtml = "";
+  // ============================================================
+  // 🔥 6. ENVOI DE L'EMAIL AVEC DESIGN PREMIUM HARMONISÉ
+  // ============================================================
+  if (employe.email) {
+    const statusColor = decision === "Validé" ? "#10b981" : "#ef4444";
+    const statusIcon = decision === "Validé" ? "https://cdn-icons-png.flaticon.com/128/179/179365.png" : "https://cdn-icons-png.flaticon.com/128/1828/1828843.png";
+    const emailSubject = `${decision === "Validé" ? "✅ Approbation" : "❌ Mise à jour"} de votre demande de congé - SIRH SECURE`;
 
-  if (decision === "Validé") {
-    emailSubject = `Approbation de votre demande de congé - ${employe.nom}`;
-    emailHtml = `<div style="font-family: Arial, sans-serif; line-height: 1.6;">
-                    <p>Bonjour ${employe.nom},</p>
-                    <p>Nous avons le plaisir de vous informer que votre demande de <strong>${typeConge}</strong> a été officiellement <strong>APPROUVÉE</strong>.</p>
-                    <p><strong>Durée validée :</strong> ${nbJours} jours ouvrés.</p>
-                    <br><p>Cordialement,<br>Le Service RH</p>
-                </div>`;
-  } else {
-    emailSubject = `Mise à jour concernant votre demande de congé`;
-    emailHtml = `<div style="font-family: Arial, sans-serif; line-height: 1.6;">
-                    <p>Bonjour ${employe.nom},</p>
-                    <p>Nous vous informons que votre demande de <strong>${typeConge}</strong> n'a pas pu être validée par ${agent || "le service RH"}.</p>
-                    <br><p>Cordialement,<br>Le service des Ressources Humaines</p>
-                </div>`;
-  }
+    const emailHtml = `
+    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #1e293b; max-width: 600px; margin: auto; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+        <!-- Header -->
+        <div style="background-color: #0f172a; padding: 30px; text-align: center;">
+            <img src="https://cdn-icons-png.flaticon.com/512/9752/9752284.png" style="width: 60px; height: 60px; margin-bottom: 10px;">
+            <h1 style="color: #ffffff; margin: 0; font-size: 18px; letter-spacing: 2px; text-transform: uppercase;">SIRH SECURE</h1>
+        </div>
 
-  try {
-    if (employe.email) {
+        <!-- Body -->
+        <div style="padding: 40px; background-color: #ffffff;">
+            <div style="text-align: center; margin-bottom: 30px;">
+                <img src="${statusIcon}" style="width: 48px; height: 48px; margin-bottom: 15px;">
+                <h2 style="color: ${statusColor}; margin: 0; font-size: 22px;">Demande ${decision}</h2>
+                <p style="color: #64748b; margin-top: 5px;">Référence : #CONG-${id.toString().substring(0,5)}</p>
+            </div>
+
+            <p style="font-size: 16px; line-height: 1.6;">Bonjour <strong>${employe.nom}</strong>,</p>
+            <p style="font-size: 15px; line-height: 1.6; color: #475569;">Votre demande de <strong>${typeConge}</strong> a été traitée par le service des Ressources Humaines.</p>
+            
+            <!-- Détails Box -->
+            <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin: 30px 0; border-left: 5px solid ${statusColor};">
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr>
+                        <td style="padding: 5px 0; color: #64748b; font-size: 13px; text-transform: uppercase;">Période</td>
+                        <td style="padding: 5px 0; font-weight: bold; text-align: right;">Du ${new Date(conge.date_debut).toLocaleDateString('fr-FR')} au ${new Date(conge.date_fin).toLocaleDateString('fr-FR')}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 5px 0; color: #64748b; font-size: 13px; text-transform: uppercase;">Durée</td>
+                        <td style="padding: 5px 0; font-weight: bold; text-align: right;">${nbJours} jours ouvrés</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 15px 0 5px 0; color: #64748b; font-size: 13px; text-transform: uppercase;">Statut Final</td>
+                        <td style="padding: 15px 0 5px 0; font-weight: 900; text-align: right; color: ${statusColor}; font-size: 16px;">${decision.toUpperCase()}</td>
+                    </tr>
+                </table>
+            </div>
+
+            <p style="font-size: 14px; color: #64748b; text-align: center; margin-top: 30px;">
+                Vous pouvez consulter votre nouveau solde et l'historique de vos demandes sur votre espace personnel.
+            </p>
+            
+            <div style="text-align: center; margin-top: 20px;">
+                <a href="https://sirh.cataria-systems.com" style="background-color: #0f172a; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">Accéder à mon compte</a>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div style="background-color: #f1f5f9; padding: 20px; text-align: center; font-size: 11px; color: #94a3b8; border-top: 1px solid #e2e8f0;">
+            Ceci est un message automatique envoyé par le système SIRH SECURE.<br>
+            Agent traitant : ${agent || "Service RH"}
+        </div>
+    </div>`;
+
+    try {
       await sendEmailAPI(employe.email, emailSubject, emailHtml);
+    } catch (mErr) {
+      console.error("❌ Erreur envoi mail décision:", mErr.message);
     }
-  } catch (mErr) {
-    console.error("❌ Erreur envoi mail décision:", mErr.message);
   }
 
-  // 6. Log d'audit
-  await supabase.from("logs").insert([
-    {
-      agent: agent || "Système",
-      action: "DÉCISION_CONGÉ",
-      details: `${decision} pour ${employe.nom} (${nbJours}j ouvrés)`,
-    },
-  ]);
+  // 7. Log d'audit
+  await supabase.from("logs").insert([{
+    agent: agent || "Système",
+    action: "DÉCISION_CONGÉ",
+    details: `${decision} pour ${employe.nom} (${nbJours}j ouvrés)`
+  }]);
 
-  return res.json({
-    status: "success",
-    message: `Demande ${decision.toLowerCase()} (${nbJours}j déduits)`,
-  });
+  return res.json({ status: "success", message: `Demande ${decision.toLowerCase()} (${nbJours}j déduits)` });
 });
-
-
 
 
 
