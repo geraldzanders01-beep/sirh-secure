@@ -106,9 +106,10 @@ router.all("/read-leaves", async (req, res) => {
   const { data, error } = await query;
   if (error) throw error;
 
-  const mapped = data.map((l) => ({
+const mapped = data.map((l) => ({
     id: l.id,
     record_id: l.id,
+    employee_id: l.employee_id, // 👈 LIGNE AJOUTÉE CRUCIALE
     Employees_nom: l.employees_nom || "Inconnu",
     Statut: l.statut,
     Type: l.type || "Congé",
