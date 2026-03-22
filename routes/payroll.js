@@ -147,17 +147,20 @@ router.all("/process-payroll", async (req, res) => {
 </head>
 <body>
     <div class="page">
-        <div class="header">
+    <div class="header">
+        <div style="display: flex; align-items: center; gap: 15px;">
+            <img src="https://cdn-icons-png.flaticon.com/512/9752/9752284.png" style="width: 50px; height: 50px;">
             <div class="company-info">
                 <h1>SIRH SECURE</h1>
                 <p>Solutions de Gestion RH & Opérationnelle</p>
                 <p>Cotonou, Bénin</p>
             </div>
-            <div class="document-title">
-                <h2>Bulletin de Paie</h2>
-                <p>${record.mois.toUpperCase()} ${record.annee}</p>
-            </div>
         </div>
+        <div class="document-title">
+            <h2>Bulletin de Paie</h2>
+            <p>${record.mois.toUpperCase()} ${record.annee}</p>
+        </div>
+    </div>
 
         <div class="info-grid">
             <div class="info-card">
