@@ -169,7 +169,7 @@ router.all("/clock", async (req, res) => {
         }]);
         if (ptgErr) throw ptgErr;
 
-        // 8. LOGIQUE VISITE (Si Mobile)
+// 8. LOGIQUE VISITE (Si Mobile)
         if (isMobileAgent) {
             if (clockAction === 'CLOCK_IN') {
                 await supabase.from('visit_reports').insert([{
@@ -178,7 +178,7 @@ router.all("/clock", async (req, res) => {
                 }]);
                 await supabase.from('employees').update({ statut: 'En Poste' }).eq('id', emp.id);
             } 
-else if (clockAction === 'CLOCK_OUT') {
+            else if (clockAction === 'CLOCK_OUT') {
                 // 1. On cherche la visite qui n'a pas encore de date de sortie
                 const { data: lastVisit } = await supabase.from('visit_reports')
                     .select('id, check_in_time')
@@ -191,7 +191,6 @@ else if (clockAction === 'CLOCK_OUT') {
                 if (lastVisit) {
                     const dur = Math.round((eventTime - new Date(lastVisit.check_in_time)) / 60000);
                     
-                    // Sécurité pour le format des produits
                     let productsArray = [];
                     if (rawProducts) {
                         try {
@@ -199,7 +198,6 @@ else if (clockAction === 'CLOCK_OUT') {
                         } catch(e) { productsArray = []; }
                     }
 
-                    // 2. MISE À JOUR DE LA VISITE AVEC LES INFOS DU FORMULAIRE
                     const { error: updErr } = await supabase.from('visit_reports').update({
                         check_out_time: eventTime.toISOString(),
                         outcome: outcome || 'VU',
@@ -214,12 +212,13 @@ else if (clockAction === 'CLOCK_OUT') {
                     if (updErr) console.error("Erreur update visite:", updErr.message);
                 }
                 
-                // Si l'utilisateur a coché "Clôturer ma journée" ou si c'est un sédentaire
                 if (isFinal) {
                     await supabase.from('employees').update({ statut: 'Actif' }).eq('id', emp.id);
                 }
             }
-              else {
+        } 
+        else {
+            // Logique pour les non-Mobile (Sédentaires)
             await supabase.from('employees').update({ statut: clockAction === 'CLOCK_IN' ? 'En Poste' : 'Actif' }).eq('id', emp.id);
         }
 
