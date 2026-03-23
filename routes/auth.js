@@ -7,129 +7,119 @@ const JWT_SECRET = process.env.JWT_SECRET;
 
 // 1. LOGIN AVEC 2FA CONDITIONNEL
 router.all("/login", async (req, res) => {
-  const username = req.body.u || req.query.u;
+  const username = (req.body.u || req.query.u || "").toLowerCase().trim();
   const password = req.body.p || req.query.p;
 
+  // 1. Récupération de l'utilisateur
   const { data: user, error } = await supabase
     .from("app_users")
-    .select("id, email, password, nom_complet, employees(id, role, photo_url, statut, employee_type, hierarchy_path, management_scope)")
+    .select("id, email, password, nom_complet, employees(id, role, statut, photo_url, employee_type)")
     .eq("email", username)
     .single();
 
   if (error || !user || user.password !== password) {
-    return res.json({ status: "error", message: "Identifiant ou mot de passe incorrect" });
+    return res.json({ status: "error", message: "Identifiants incorrects" });
   }
 
   const emp = user.employees && user.employees.length > 0 ? user.employees[0] : null;
-  
-  // Kill Switch : Blocage immédiat si l'employé est "Sortie"
-  if (emp && (emp.statut || "").toLowerCase().includes("sortie")) {
-    return res.json({ status: "revoked", message: "Accès révoqué - Contactez la direction." });
+  const userRole = emp ? (emp.role || "EMPLOYEE").toUpperCase() : "EMPLOYEE";
+
+  // --- SÉCURITÉ : BLOCAGE DES SORTIES ---
+  if (emp && emp.statut.toLowerCase().includes("sortie")) {
+    return res.json({ status: "revoked", message: "Accès révoqué. Contactez la direction." });
   }
 
-  const userRole = emp ? (emp.role || "EMPLOYEE").toUpperCase().trim() : "EMPLOYEE";
-
   // ============================================================
-  // 🔥 ÉTAPE 2FA : SI ADMIN OU RH, ON ENVOIE UN CODE
+  // 🔥 LOGIQUE 2FA POUR ADMIN & RH
   // ============================================================
   if (userRole === "ADMIN" || userRole === "RH") {
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const expires = new Date(Date.now() + 5 * 60000).toISOString(); // Expire dans 5 min
+    const expires = new Date(Date.now() + 10 * 60000).toISOString(); // Expire dans 10 min
 
-    // On stocke le code temporairement dans la table app_users
-    await supabase.from("app_users").update({ 
-        reset_code: otpCode, 
-        reset_expires: expires 
-    }).eq("id", user.id);
+    // On stocke le code dans app_users (colonnes reset_code et reset_expires)
+    await supabase.from("app_users")
+      .update({ reset_code: otpCode, reset_expires: expires })
+      .eq("id", user.id);
 
-    // Envoi de l'email Premium
+    // Email Premium Harmonisé
     const emailHtml = `
     <div style="font-family: sans-serif; color: #1e293b; max-width: 500px; margin: auto; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden;">
-        <div style="background-color: #0f172a; padding: 25px; text-align: center;">
-            <img src="https://cdn-icons-png.flaticon.com/512/9752/9752284.png" style="width: 50px;">
-            <h1 style="color: #ffffff; margin: 10px 0 0 0; font-size: 18px; text-transform: uppercase;">Sécurité SIRH</h1>
+        <div style="background-color: #0f172a; padding: 30px; text-align: center;">
+            <img src="https://cdn-icons-png.flaticon.com/512/9752/9752284.png" style="width: 60px;">
+            <h1 style="color: #ffffff; margin: 10px 0 0 0; font-size: 18px; letter-spacing: 2px;">SÉCURITÉ SIRH</h1>
         </div>
-        <div style="padding: 30px; text-align: center;">
-            <h2 style="color: #0f172a;">Vérification de connexion</h2>
-            <p>Bonjour <b>${user.nom_complet}</b>,</p>
-            <p>Un accès à haut privilège (<b>${userRole}</b>) a été détecté. Pour continuer, saisissez le code suivant dans l'application :</p>
-            
-            <div style="background: #f1f5f9; padding: 20px; margin: 25px 0; font-size: 32px; font-weight: 900; letter-spacing: 10px; color: #2563eb; border-radius: 12px; border: 2px dashed #cbd5e1;">
+        <div style="padding: 40px; text-align: center;">
+            <h2 style="margin-top: 0; color: #0f172a;">Vérification de connexion</h2>
+            <p style="color: #64748b;">Un accès à privilèges élevés a été demandé pour votre compte. Utilisez le code ci-dessous pour valider votre identité :</p>
+            <div style="background: #f1f5f9; padding: 20px; margin: 30px 0; font-size: 32px; font-weight: 900; letter-spacing: 10px; color: #2563eb; border-radius: 12px; border: 2px dashed #cbd5e1; font-family: monospace;">
                 ${otpCode}
             </div>
-            
-            <p style="font-size: 12px; color: #94a3b8;">Ce code est à usage unique et expirera dans 5 minutes.</p>
+            <p style="font-size: 12px; color: #94a3b8;">Ce code expirera dans 10 minutes. Si vous n'êtes pas à l'origine de cette demande, sécurisez votre compte immédiatement.</p>
         </div>
     </div>`;
 
-    await sendEmailAPI(user.email, "🔑 Code de sécurité SIRH", emailHtml);
+    await sendEmailAPI(user.email, "Votre code de sécurité SIRH", emailHtml);
 
-    return res.json({ 
-        status: "require_2fa", 
-        email: user.email,
-        message: "Un code de vérification a été envoyé sur votre boîte mail." 
-    });
+    return res.json({ status: "require_2fa", email: user.email });
   }
 
-  // ============================================================
-  // CONNEXION NORMALE POUR LES AUTRES RÔLES
-  // ============================================================
-  const { data: perms } = await supabase.from("role_permissions").select("*").eq("role_name", userRole).single();
-
-  const token = jwt.sign({
-      id: user.id, emp_id: emp ? emp.id : null, role: userRole,
-      permissions: perms || {}, hierarchy_path: emp ? emp.hierarchy_path : null,
-      management_scope: emp ? emp.management_scope : [],
-  }, JWT_SECRET, { expiresIn: "8h" });
+  // --- POUR LES AUTRES (EMPLOYÉ SIMPLE) : GÉNÉRATION JWT DIRECTE ---
+  const token = jwt.sign({ id: user.id, emp_id: emp.id, role: userRole, permissions: {} }, process.env.JWT_SECRET, { expiresIn: "8h" });
 
   return res.json({
-    status: "success", token, id: emp ? emp.id : null, nom: user.nom_complet,
-    role: userRole, photo: emp ? emp.photo_url : null,
-    employee_type: emp ? emp.employee_type : "OFFICE",
-    permissions: perms || {}
+    status: "success",
+    token: token,
+    id: emp.id,
+    nom: user.nom_complet,
+    role: userRole,
+    employee_type: emp.employee_type || "OFFICE"
   });
 });
 
-
 // 2. ROUTE DE VÉRIFICATION DU CODE 2FA
-router.all("/verify-2fa", async (req, res) => {
-    const { u, code } = req.body;
+router.post("/verify-2fa", async (req, res) => {
+  const { u, code } = req.body;
 
-    // 1. Vérification du code en base
-    const { data: user, error } = await supabase
-        .from("app_users")
-        .select("*, employees(id, role, photo_url, statut, employee_type, hierarchy_path, management_scope)")
-        .eq("email", u)
-        .eq("reset_code", code)
-        .gt("reset_expires", new Date().toISOString())
-        .single();
+  // 1. Vérification du code + Email + Expiration
+  const { data: user, error } = await supabase
+    .from("app_users")
+    .select("id, email, nom_complet, employees(id, role, photo_url, employee_type)")
+    .eq("email", u.toLowerCase().trim())
+    .eq("reset_code", code)
+    .gt("reset_expires", new Date().toISOString())
+    .single();
 
-    if (error || !user) {
-        return res.status(400).json({ status: "error", message: "Code invalide ou expiré." });
-    }
+  if (error || !user) {
+    return res.status(401).json({ status: "error", message: "Code incorrect ou expiré" });
+  }
 
-    // 2. Code bon ! On génère le Token final
-    const emp = user.employees[0];
-    const userRole = emp.role.toUpperCase();
-    const { data: perms } = await supabase.from("role_permissions").select("*").eq("role_name", userRole).single();
+  const emp = user.employees[0];
+  const userRole = emp.role.toUpperCase();
 
-    // Reset du code en base pour qu'il ne serve plus
-    await supabase.from("app_users").update({ reset_code: null, reset_expires: null }).eq("id", user.id);
+  // 2. Récupération des permissions réelles pour le token
+  const { data: perms } = await supabase.from("role_permissions").select("*").eq("role_name", userRole).single();
 
-    const token = jwt.sign({
-        id: user.id, emp_id: emp.id, role: userRole,
-        permissions: perms || {}, hierarchy_path: emp.hierarchy_path,
-        management_scope: emp.management_scope,
-    }, JWT_SECRET, { expiresIn: "8h" });
+  // 3. Effacer le code utilisé (Sécurité à usage unique)
+  await supabase.from("app_users").update({ reset_code: null, reset_expires: null }).eq("id", user.id);
 
-    return res.json({
-        status: "success", token, id: emp.id, nom: user.nom_complet,
-        role: userRole, photo: emp.photo_url,
-        employee_type: emp.employee_type,
-        permissions: perms || {}
-    });
+  // 4. Génération du JWT Final
+  const token = jwt.sign({
+    id: user.id,
+    emp_id: emp.id,
+    role: userRole,
+    permissions: perms || {}
+  }, process.env.JWT_SECRET, { expiresIn: "12h" });
+
+  return res.json({
+    status: "success",
+    token: token,
+    id: emp.id,
+    nom: user.nom_complet,
+    role: userRole,
+    employee_type: emp.employee_type,
+    permissions: perms || {}
+  });
 });
-
 // A. DEMANDER UN CODE (VERSION SÉCURISÉE)
 router.all("/request-password-reset", async (req, res) => {
   const email = req.body.email ? req.body.email.toLowerCase().trim() : "";
