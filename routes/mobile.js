@@ -10,10 +10,9 @@ router.all("/clock", async (req, res) => {
         return res.status(403).json({ error: "Vous n'avez pas l'autorisation de pointer." });
     }
 
-    // 2. EXTRACTION ET NETTOYAGE DES DONNÉES (Gestion ultra-robuste JSON/FormData)
+    // 2. EXTRACTION ET NETTOYAGE DES DONNÉES
     const getVal = (val) => Array.isArray(val) ? val[0] : val;
 
-    // On cherche l'ID et l'Action partout (body ou query) pour éviter le "undefined"
     const id = getVal(req.body.id || req.body.employee_id || req.query.id);
     const clockAction = getVal(req.body.action || req.query.action);
     const gps = getVal(req.body.gps) || "0,0";
@@ -27,17 +26,14 @@ router.all("/clock", async (req, res) => {
     const contact_nom_libre = getVal(req.body.contact_nom_libre);
     let rawProducts = getVal(req.body.presentedProducts);
 
-    console.log(`📍 Pointage: ID [${id}] - Action [${clockAction}] - GPS [${gps}]`);
+    console.log(`📍 Pointage: ID [${id}] - Action [${clockAction}]`);
 
     if (!id || id === "undefined" || id === "null") {
-        console.error("❌ Erreur: ID manquant dans req.body:", req.body);
         return res.status(400).json({ error: "Identifiant employé manquant." });
     }
 
     const eventTime = time ? new Date(time) : new Date();
     const today = eventTime.toISOString().split('T')[0];
-    
-    // Découpage sécurisé du GPS
     const gpsString = String(gps);
     const [userLat, userLon] = gpsString.includes(',') ? gpsString.split(',').map(parseFloat) : [0, 0];
 
@@ -49,10 +45,8 @@ router.all("/clock", async (req, res) => {
             .eq('id', id.trim())
             .maybeSingle();
 
-        if (empErr) throw empErr;
-        if (!emp) {
-            console.error(`❌ ÉCHEC : L'ID [${id}] n'existe pas dans la table employees.`);
-            return res.status(404).json({ error: "Employé introuvable dans la base de données." });
+        if (empErr || !emp) {
+            return res.status(404).json({ error: "Employé introuvable." });
         }
 
         const isMobileAgent = (emp.employee_type === 'MOBILE');
@@ -66,13 +60,11 @@ router.all("/clock", async (req, res) => {
             .maybeSingle();
 
         if (finalRecord) {
-            return res.status(403).json({ error: "Votre journée est déjà clôturée. Plus de pointage possible aujourd'hui." });
+            return res.status(403).json({ error: "Votre journée est déjà clôturée." });
         }
 
-        // 5. TRAITEMENT DE LA PHOTO DE PREUVE (Fichier OU Base64)
+        // 5. TRAITEMENT DE LA PHOTO / PREUVE
         let proofUrl = null;
-        
-        // A. Cas du fichier envoyé via FormData (Multer)
         if (req.files && req.files.length > 0) {
             const file = req.files.find(f => f.fieldname === 'proof_photo');
             if (file) {
@@ -80,9 +72,7 @@ router.all("/clock", async (req, res) => {
                 const { error: upErr } = await supabase.storage.from('documents').upload(fileName, file.buffer, { contentType: file.mimetype });
                 if (!upErr) proofUrl = supabase.storage.from('documents').getPublicUrl(fileName).data.publicUrl;
             }
-        } 
-        // B. Cas du Base64 envoyé via JSON
-        else if (req.body.proof_photo_base64) {
+        } else if (req.body.proof_photo_base64) {
             const base64Data = req.body.proof_photo_base64.replace(/^data:image\/\w+;base64,/, "");
             const buffer = Buffer.from(base64Data, 'base64');
             const fileName = `VISITE_JSON_ID${emp.id}_${Date.now()}.jpg`;
@@ -90,62 +80,31 @@ router.all("/clock", async (req, res) => {
             if (!upErr) proofUrl = supabase.storage.from('documents').getPublicUrl(fileName).data.publicUrl;
         }
 
-    // 6. LOGIQUE GPS (Version Vice-Versa : Synchronisation Totale PC/Mobile)
+        // 6. LOGIQUE GPS (Rayon Intelligent)
         let detectedLocName = "Zone Mobile";
         let detectedLocId = null;
-
         const userAgent = req.headers['user-agent'] || "";
         const isMobileDevice = /Mobile|Android|iPhone|iPad/i.test(userAgent);
 
-        if (forced_location_id && clockAction === 'CLOCK_IN') {
-            const { data: loc } = await supabase.from('mobile_locations').select('*').eq('id', forced_location_id).single();
-            if (loc) {
-                const dist = getDistanceInMeters(userLat, userLon, loc.latitude, loc.longitude);
-                if (dist <= (loc.radius || 100)) {
-                    detectedLocName = loc.name;
-                    detectedLocId = loc.id;
-                }
-            }
-        } else {
-            const [zonesRes, mobilesRes] = await Promise.all([
-                supabase.from('zones').select('*').eq('actif', true),
-                supabase.from('mobile_locations').select('*').eq('is_active', true)
-            ]);
+        const [zonesRes, mobilesRes] = await Promise.all([
+            supabase.from('zones').select('*').eq('actif', true),
+            supabase.from('mobile_locations').select('*').eq('is_active', true)
+        ]);
 
-            let allPlaces = [];
-            if (zonesRes.data) zonesRes.data.forEach(z => {
-                allPlaces.push({ id: z.id, name: z.nom, lat: z.latitude, lon: z.longitude, radius: z.rayon, isOffice: true });
-            });
-            if (mobilesRes.data) mobilesRes.data.forEach(m => {
-                allPlaces.push({ id: m.id, name: m.name, lat: m.latitude, lon: m.longitude, radius: m.radius, isOffice: false });
-            });
-            
-            for (let loc of allPlaces) {
-                const dist = getDistanceInMeters(userLat, userLon, loc.lat, loc.lon);
-                
-                // --- CALCUL DU RAYON AVEC GESTION DU VICE-VERSA ---
-                let effectiveRadius = loc.radius || 100;
+        let allPlaces = [];
+        if (zonesRes.data) zonesRes.data.forEach(z => allPlaces.push({ id: z.id, name: z.nom, lat: z.latitude, lon: z.longitude, radius: z.rayon, isOffice: true }));
+        if (mobilesRes.data) mobilesRes.data.forEach(m => allPlaces.push({ id: m.id, name: m.name, lat: m.latitude, lon: m.longitude, radius: m.radius, isOffice: false }));
+        
+        for (let loc of allPlaces) {
+            const dist = getDistanceInMeters(userLat, userLon, loc.lat, loc.lon);
+            let effectiveRadius = loc.radius || 100;
+            if (loc.isOffice) effectiveRadius = 1500;
+            else if (isMobileDevice) effectiveRadius = 100;
 
-                if (loc.isOffice) {
-                    // Pour les bureaux, on accepte l'écart de 1.5km pour TOUT LE MONDE.
-                    // Cela règle le problème si le point a été créé sur PC et qu'on pointe sur Mobile (ou l'inverse).
-                    effectiveRadius = 1500; 
-                } else {
-                    // Pour le terrain (Pharmacies, etc.), on reste strict sur Mobile.
-                    if (isMobileDevice) {
-                        effectiveRadius = 100; 
-                    } else {
-                        effectiveRadius = 1500; // Tolérance si un manager vérifie sur PC
-                    }
-                }
-                // ---------------------------------------------------
-
-                if (dist <= effectiveRadius) {
-                    detectedLocName = loc.name;
-                    detectedLocId = loc.isOffice ? null : loc.id;
-                    console.log(`✅ Pointage validé : ${loc.name} | Appareil: ${isMobileDevice ? 'Mobile' : 'PC'} | Distance: ${Math.round(dist)}m | Rayon utilisé: ${effectiveRadius}m`);
-                    break;
-                }
+            if (dist <= effectiveRadius) {
+                detectedLocName = loc.name;
+                detectedLocId = loc.isOffice ? null : loc.id;
+                break;
             }
         }
 
@@ -153,9 +112,8 @@ router.all("/clock", async (req, res) => {
             return res.status(403).json({ error: "Vous n'êtes sur aucun site autorisé." });
         }
 
-        // 7. ENREGISTREMENT DU POINTAGE
+        // 7. ENREGISTREMENT DU POINTAGE (Table pointages)
         const isFinal = (clockAction === 'CLOCK_OUT' && (is_last_exit === 'true' || is_last_exit === true || !isMobileAgent));
-
         const { error: ptgErr } = await supabase.from('pointages').insert([{
             employee_id: emp.id,
             action: clockAction,
@@ -169,120 +127,60 @@ router.all("/clock", async (req, res) => {
         }]);
         if (ptgErr) throw ptgErr;
 
-// 8. LOGIQUE VISITE (Si Mobile) - VERSION ROBUSTE
+        // 8. LOGIQUE MÉTIER VISITE (Table visit_reports)
         if (isMobileAgent) {
             if (clockAction === 'CLOCK_IN') {
-                console.log(`📝 Création d'un rapport de visite pour ${emp.nom} à ${detectedLocName}`);
-                
-                // ON RETIRE 'statut_visite' car la colonne n'existe pas dans ta DB
-                const { error: visitErr } = await supabase.from('visit_reports').insert([{
-                    employee_id: emp.id, 
-                    check_in_time: eventTime.toISOString(),
-                    location_name: detectedLocName,
-                    location_id: detectedLocId || null,
-                    schedule_ref_id: schedule_id || null
-                }]);
-
-                if (visitErr) {
-                    console.error("❌ Erreur critique Supabase (IN):", visitErr.message);
-                }
-
-                await supabase.from('employees').update({ statut: 'En Poste' }).eq('id', emp.id);
-            } 
-// 8. LOGIQUE VISITE (Si Mobile) - VERSION FINALISÉE ET SÉCURISÉE
-        if (isMobileAgent) {
-            if (clockAction === 'CLOCK_IN') {
-                console.log(`📝 [IN] Création rapport pour ${emp.nom} à ${detectedLocName}`);
-                
-                const { data: newVisit, error: visitErr } = await supabase.from('visit_reports').insert([{
+                console.log(`📝 [IN] Rapport pour ${emp.nom}`);
+                await supabase.from('visit_reports').insert([{
                     employee_id: emp.id, 
                     check_in_time: eventTime.toISOString(),
                     location_name: detectedLocName,
                     location_id: (detectedLocId && detectedLocId !== 'undefined') ? detectedLocId : null,
                     schedule_ref_id: (schedule_id && schedule_id !== 'undefined') ? schedule_id : null
-                }]).select();
-
-                if (visitErr) {
-                    console.error("❌ [ERREUR IN] Supabase a refusé la création :", visitErr.message);
-                } else {
-                    console.log("✅ [IN] Ligne créée dans visit_reports. ID:", newVisit[0].id);
-                }
-
+                }]);
                 await supabase.from('employees').update({ statut: 'En Poste' }).eq('id', emp.id);
             } 
-          else if (clockAction === 'CLOCK_OUT') {
-                console.log(`📝 [OUT] Tentative de clôture pour ${emp.nom}`);
-
-                // 1. Recherche de la visite ouverte la plus récente
-                const { data: lastVisit, error: fetchErr } = await supabase.from('visit_reports')
-                    .select('id, check_in_time')
-                    .eq('employee_id', emp.id)
-                    .is('check_out_time', null)
-                    .order('check_in_time', { ascending: false })
-                    .limit(1)
-                    .maybeSingle();
-
-                if (fetchErr) console.error("❌ [ERREUR FETCH] :", fetchErr.message);
+            else if (clockAction === 'CLOCK_OUT') {
+                console.log(`📝 [OUT] Rapport pour ${emp.nom}`);
+                const { data: lastVisit } = await supabase.from('visit_reports')
+                    .select('id, check_in_time').eq('employee_id', emp.id).is('check_out_time', null)
+                    .order('check_in_time', { ascending: false }).limit(1).maybeSingle();
 
                 if (lastVisit) {
                     const dur = Math.round((eventTime - new Date(lastVisit.check_in_time)) / 60000);
-                    
-                    // --- 💥 FIX CRITIQUE : CONVERSION POUR TEXT[] 💥 ---
                     let productsArray = [];
                     try {
                         if (rawProducts) {
                             const raw = (typeof rawProducts === 'string') ? JSON.parse(rawProducts) : rawProducts;
-                            // Ta DB attend des textes simples. On extrait juste le NOM des produits.
-                            if (Array.isArray(raw)) {
-                                productsArray = raw.map(p => (typeof p === 'string') ? p : (p.name || p.NAME || "Produit"));
-                            }
+                            productsArray = Array.isArray(raw) ? raw.map(p => (typeof p === 'string') ? p : (p.name || "Produit")) : [];
                         }
-                    } catch(e) { console.error("⚠️ Erreur format produits"); }
+                    } catch(e) { productsArray = []; }
 
-                    // --- SÉCURISATION DES UUID (Si pas un UUID valide, on met null) ---
-                    const isValidUUID = (uuid) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uuid);
+                    const isValidUUID = (u) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(u);
                     
-                    const cleanPrescripteurId = isValidUUID(prescripteur_id) ? prescripteur_id : null;
-                    const cleanContactNom = (contact_nom_libre && contact_nom_libre !== 'undefined') ? contact_nom_libre : null;
-
-                    // 2. Mise à jour de la ligne (Respect strict de ton schéma DB)
-                    const updatePayload = {
+                    await supabase.from('visit_reports').update({
                         check_out_time: eventTime.toISOString(),
                         outcome: outcome || 'VU',
                         notes: report || '',
                         proof_url: proofUrl || null,
                         duration_minutes: dur > 0 ? dur : 1,
-                        presented_products: productsArray, // ✅ Maintenant c'est un tableau de strings ["A", "B"]
-                        prescripteur_id: cleanPrescripteurId,
-                        contact_nom_libre: cleanContactNom
-                    };
-
-                    const { error: updErr } = await supabase.from('visit_reports')
-                        .update(updatePayload)
-                        .eq('id', lastVisit.id);
-
-                    if (updErr) {
-                        console.error("❌ [ERREUR DB] Supabase refuse l'UPDATE :", updErr.message);
-                    } else {
-                        console.log(`✅ [SUCCÈS] Rapport ID ${lastVisit.id} mis à jour.`);
-                    }
-                } else {
-                    console.warn("⚠️ [OUT] Aucune visite ouverte trouvée.");
+                        presented_products: productsArray,
+                        prescripteur_id: isValidUUID(prescripteur_id) ? prescripteur_id : null,
+                        contact_nom_libre: contact_nom_libre || null
+                    }).eq('id', lastVisit.id);
                 }
-
                 if (isFinal) await supabase.from('employees').update({ statut: 'Actif' }).eq('id', emp.id);
             }
-        }
-        else {
-            // Logique pour les non-Mobile (Sédentaires)
+        } else {
+            // Sédentaires : Update statut simple
             await supabase.from('employees').update({ statut: clockAction === 'CLOCK_IN' ? 'En Poste' : 'Actif' }).eq('id', emp.id);
         }
 
         return res.json({ status: "success", zone: detectedLocName });
 
     } catch (err) {
-        console.error("💥 CRASH ROUTE CLOCK:", err.message);
-        return res.status(500).json({ error: "Erreur interne lors du pointage." });
+        console.error("💥 CRASH SERVEUR:", err.message);
+        return res.status(500).json({ error: "Erreur technique lors du pointage." });
     }
 });
            
