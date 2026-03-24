@@ -78,70 +78,100 @@ router.all("/login", async (req, res) => {
 
 // 2. ROUTE DE VÉRIFICATION DU CODE 2FA
 router.post("/verify-2fa", async (req, res) => {
-  let { u, code } = req.body;
-  
-  const email = String(u).toLowerCase().trim();
-  const codeSaisi = String(code).trim(); // On force en texte
+  try {
+    // 1. EXTRACTION ET NETTOYAGE RIGOUREUX
+    const email = String(req.body.u || "").toLowerCase().trim();
+    const codeSaisi = String(req.body.code || "").trim();
 
-  console.log(`🔐 Tentative 2FA pour : ${email} avec le code : ${codeSaisi}`);
+    console.log(`[2FA-START] 🔐 Tentative pour : ${email}`);
 
-  // 1. On cherche l'utilisateur par son email uniquement d'abord
-  const { data: user, error } = await supabase
-    .from("app_users")
-    .select("id, email, reset_code, reset_expires, nom_complet, employees(id, role, photo_url, employee_type)")
-    .eq("email", email)
-    .single();
+    if (!email || !codeSaisi) {
+        return res.status(400).json({ status: "error", message: "Données manquantes" });
+    }
 
-  if (error || !user) {
-    console.error("❌ Utilisateur non trouvé lors du 2FA");
-    return res.status(401).json({ status: "error", message: "Session invalide" });
+    // 2. RÉCUPÉRATION DE L'UTILISATEUR
+    const { data: user, error } = await supabase
+      .from("app_users")
+      .select("id, email, reset_code, reset_expires, nom_complet, employees(id, role, photo_url, employee_type)")
+      .eq("email", email)
+      .single();
+
+    if (error || !user) {
+      console.error(`[2FA-ERROR] ❌ Utilisateur introuvable : ${email}`);
+      return res.status(401).json({ status: "error", message: "Session expirée. Recommencez." });
+    }
+
+    // 3. LOGS DE COMPARAISON (C'est ici que tu verras le bug sur Render)
+    // On utilise JSON.stringify pour voir s'il y a des espaces cachés ou des types différents
+    const codeEnBase = user.reset_code ? String(user.reset_code).trim() : null;
+    
+    console.log(`[2FA-CHECK] Comparaison :`);
+    console.log(`  > Saisi : "${codeSaisi}" (longueur: ${codeSaisi.length})`);
+    console.log(`  > Base  : "${codeEnBase}" (longueur: ${codeEnBase ? codeEnBase.length : 0})`);
+
+    // 4. VALIDATION DU CODE
+    if (!codeEnBase || codeSaisi !== codeEnBase) {
+      console.error(`[2FA-FAIL] ❌ Code incorrect pour ${email}`);
+      return res.status(401).json({ status: "error", message: "Le code de sécurité est incorrect." });
+    }
+
+    // 5. VALIDATION DE L'EXPIRATION
+    const maintenant = new Date();
+    const expiration = new Date(user.reset_expires);
+
+    console.log(`[2FA-TIME] Maintenant : ${maintenant.toISOString()}`);
+    console.log(`[2FA-TIME] Expire le : ${expiration.toISOString()}`);
+
+    if (maintenant > expiration) {
+      console.error(`[2FA-FAIL] ⏰ Code expiré pour ${email}`);
+      return res.status(401).json({ status: "error", message: "Ce code a expiré (validité 10 min)." });
+    }
+
+    // 6. TOUT EST OK -> RÉCUPÉRATION DES DROITS
+    const emp = Array.isArray(user.employees) ? user.employees[0] : user.employees;
+    
+    if (!emp) {
+        console.error(`[2FA-ERROR] ❌ Aucun profil employé lié à ${email}`);
+        return res.status(401).json({ status: "error", message: "Compte incomplet. Contactez le RH." });
+    }
+
+    const userRole = (emp.role || "EMPLOYEE").toUpperCase();
+    const { data: perms } = await supabase
+        .from("role_permissions")
+        .select("*")
+        .eq("role_name", userRole)
+        .single();
+
+    // 7. NETTOYAGE (Usage unique)
+    await supabase.from("app_users")
+        .update({ reset_code: null, reset_expires: null })
+        .eq("id", user.id);
+
+    // 8. GÉNÉRATION DU TOKEN JWT FINAL
+    const token = jwt.sign({
+      id: user.id,
+      emp_id: emp.id,
+      role: userRole,
+      permissions: perms || {}
+    }, process.env.JWT_SECRET, { expiresIn: "12h" });
+
+    console.log(`[2FA-SUCCESS] ✅ Accès accordé à ${user.nom_complet} (${userRole})`);
+
+    return res.json({
+      status: "success",
+      token: token,
+      id: emp.id,
+      nom: user.nom_complet,
+      role: userRole,
+      employee_type: emp.employee_type || "OFFICE",
+      permissions: perms || {}
+    });
+
+  } catch (err) {
+    console.error(`[2FA-CRASH] 💥 Erreur critique :`, err.message);
+    return res.status(500).json({ status: "error", message: "Erreur technique serveur." });
   }
-
-  // 2. VERIFICATION MANUELLE DU CODE (Plus fiable que .eq dans la requête)
-  const codeEnBase = String(user.reset_code).trim();
-  const expiration = new Date(user.reset_expires);
-  const maintenant = new Date();
-
-  if (codeSaisi !== codeEnBase) {
-    console.error(`❌ Code incorrect. Saisi: ${codeSaisi}, En base: ${codeEnBase}`);
-    return res.status(401).json({ status: "error", message: "Le code est incorrect" });
-  }
-
-  if (maintenant > expiration) {
-    console.error("❌ Code expiré");
-    return res.status(401).json({ status: "error", message: "Le code a expiré (10 min max)" });
-  }
-
-  // 3. TOUT EST OK -> RÉCUPÉRATION DES PERMISSIONS
-  const emp = user.employees[0];
-  const userRole = emp.role.toUpperCase();
-  const { data: perms } = await supabase.from("role_permissions").select("*").eq("role_name", userRole).single();
-
-  // 4. NETTOYAGE DU CODE (Usage unique)
-  await supabase.from("app_users").update({ reset_code: null, reset_expires: null }).eq("id", user.id);
-
-  // 5. GÉNÉRATION DU TOKEN FINAL
-  const token = jwt.sign({
-    id: user.id,
-    emp_id: emp.id,
-    role: userRole,
-    permissions: perms || {}
-  }, process.env.JWT_SECRET, { expiresIn: "12h" });
-
-  console.log(`✅ 2FA réussi pour ${user.nom_complet}`);
-
-  return res.json({
-    status: "success",
-    token: token,
-    id: emp.id,
-    nom: user.nom_complet,
-    role: userRole,
-    employee_type: emp.employee_type,
-    permissions: perms || {}
-  });
 });
-
-
 
 
 // A. DEMANDER UN CODE (VERSION SÉCURISÉE)
