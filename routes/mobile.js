@@ -163,7 +163,7 @@ router.all("/clock", async (req, res) => {
                     .select('id, check_in_time').eq('employee_id', emp.id).is('check_out_time', null)
                     .order('check_in_time', { ascending: false }).limit(1).maybeSingle();
 
-if (lastVisit) {
+                if (lastVisit) {
                     console.log(`🎯 [DEBUG] Visite trouvée ID: ${lastVisit.id}. Clôture en cours...`);
                     
                     const dur = Math.round((eventTime - new Date(lastVisit.check_in_time)) / 60000);
@@ -224,7 +224,8 @@ if (lastVisit) {
                     await supabase.from('employees').update({ statut: 'Actif' }).eq('id', emp.id);
                 }   
             } 
-        } else {
+        } // <--- ACCOLADE AJOUTÉE ICI : Ferme proprement le "if (isMobileAgent)"
+        else {
             // Sédentaires : Update statut simple
             await supabase.from('employees').update({ statut: clockAction === 'CLOCK_IN' ? 'En Poste' : 'Actif' }).eq('id', emp.id);
         }
@@ -236,6 +237,8 @@ if (lastVisit) {
         return res.status(500).json({ error: "Erreur technique lors du pointage." });
     }
 });
+
+
            
            // --- VÉRIFICATION ÉTAT POINTAGE (SIMPLIFIÉ) ---
 router.all('/attendance-status', async (req, res) => {
