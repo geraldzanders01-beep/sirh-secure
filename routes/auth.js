@@ -88,19 +88,25 @@ router.all("/login", async (req, res) => {
 
 
 
-// 2. ROUTE DE VÉRIFICATION DU CODE 2FA (Version Spéciale Timezone)
+// ============================================================
+// 2. VÉRIFICATION 2FA (DÉCOUPAGE STRICT POUR DEBUGGING)
+// ============================================================
 router.post("/verify-2fa", async (req, res) => {
   try {
     const email = String(req.body.u || "").toLowerCase().trim();
     const codeSaisi = String(req.body.code || "").trim();
 
-    console.log(`[2FA-START] 🔐 Vérification pour : ${email}`);
+    console.log(`\n=================================================`);
+    console.log(`[2FA] 🔐 DÉBUT DE LA VÉRIFICATION POUR : ${email}`);
+    console.log(`=================================================`);
 
+    // --- ÉTAPE 1 : Vérification des données reçues ---
     if (!email || !codeSaisi) {
-        return res.status(400).json({ status: "error", message: "Données manquantes" });
+        console.error(`[2FA-FAIL] ❌ Raison : Email ou code manquant dans la requête.`);
+        return res.status(400).json({ status: "error", message: "L'email ou le code n'a pas été envoyé." });
     }
 
-    // 1. Récupération de l'utilisateur
+    // --- ÉTAPE 2 : Recherche de l'utilisateur en base ---
     const { data: user, error } = await supabase
       .from("app_users")
       .select("id, email, reset_code, reset_expires, nom_complet, employees(id, role, photo_url, employee_type)")
@@ -108,50 +114,62 @@ router.post("/verify-2fa", async (req, res) => {
       .single();
 
     if (error || !user) {
-      return res.status(401).json({ status: "error", message: "Session expirée. Veuillez vous reconnecter." });
+      console.error(`[2FA-FAIL] ❌ Raison : Utilisateur introuvable dans la table app_users.`);
+      return res.status(401).json({ status: "error", message: "Ce compte n'existe pas ou est introuvable." });
     }
 
-    // 2. Comparaison du code (En forçant le format texte)
-    const codeEnBase = user.reset_code ? String(user.reset_code).trim() : null;
+    // --- ÉTAPE 3 : Vérification de l'existence d'un code ---
+    if (!user.reset_code) {
+        console.error(`[2FA-FAIL] ❌ Raison : La colonne reset_code est vide (NULL). Le code a déjà été utilisé ou n'a pas été généré.`);
+        return res.status(401).json({ status: "error", message: "Aucun code actif. Veuillez vous reconnecter pour recevoir un nouveau code." });
+    }
+
+    // --- ÉTAPE 4 : Comparaison stricte des codes ---
+    const codeEnBase = String(user.reset_code).trim();
+    console.log(`[2FA-CHECK] Code tapé par l'utilisateur : "${codeSaisi}"`);
+    console.log(`[2FA-CHECK] Code enregistré dans la base : "${codeEnBase}"`);
     
-    if (!codeEnBase || codeSaisi !== codeEnBase) {
-      console.error(`[2FA-FAIL] ❌ Code incorrect pour ${email}. Saisi: ${codeSaisi} | Base: ${codeEnBase}`);
-      return res.status(401).json({ status: "error", message: "Le code de sécurité est incorrect." });
+    if (codeSaisi !== codeEnBase) {
+      console.error(`[2FA-FAIL] ❌ Raison : Les deux codes ne sont pas identiques.`);
+      return res.status(401).json({ status: "error", message: "Le code à 6 chiffres est incorrect." });
     }
 
-    // 3. VÉRIFICATION TEMPORELLE ABSOLUE (En millisecondes)
-    const maintenantMS = Date.now(); // Temps actuel universel
-    const expirationMS = new Date(user.reset_expires).getTime(); // Temps d'expiration universel
+    // --- ÉTAPE 5 : Vérification temporelle absolue ---
+    const maintenantMS = Date.now();
+    const expirationMS = new Date(user.reset_expires).getTime();
+    const margeErreurMS = 5 * 60 * 1000; // 5 minutes de marge
+
+    console.log(`[2FA-TIME] Heure Serveur (Render) : ${new Date().toISOString()} (${maintenantMS})`);
+    console.log(`[2FA-TIME] Heure Expiration (Base) : ${user.reset_expires} (${expirationMS})`);
     
-    // On ajoute une marge de 5 minutes (300 000 ms) pour compenser les décalages de serveurs
-    const margeErreur = 5 * 60 * 1000; 
-
-    console.log(`[2FA-TIME] Maintenant: ${maintenantMS} | Expire: ${expirationMS} | Diff: ${maintenantMS - expirationMS}ms`);
-
-    if (maintenantMS > (expirationMS + margeErreur)) {
-      console.error(`[2FA-FAIL] ⏰ Code expiré pour ${email}`);
-      return res.status(401).json({ status: "error", message: "Ce code a expiré. Veuillez recommencer la connexion." });
+    if (maintenantMS > (expirationMS + margeErreurMS)) {
+      const depassementMins = Math.round((maintenantMS - expirationMS) / 60000);
+      console.error(`[2FA-FAIL] ⏰ Raison : Code expiré depuis ${depassementMins} minutes.`);
+      return res.status(401).json({ status: "error", message: "Le temps est écoulé. Ce code a expiré." });
     }
 
-    // 4. RÉCUPÉRATION DES DROITS
+    // --- ÉTAPE 6 : Vérification du profil employé ---
     const emp = Array.isArray(user.employees) ? user.employees[0] : user.employees;
     if (!emp) {
-        return res.status(401).json({ status: "error", message: "Profil employé manquant." });
+        console.error(`[2FA-FAIL] ❌ Raison : L'utilisateur n'a pas de fiche dans la table employees.`);
+        return res.status(401).json({ status: "error", message: "Votre compte n'est relié à aucune fiche collaborateur." });
     }
 
+    // --- ÉTAPE 7 : Tout est valide, on ouvre les portes ---
+    console.log(`[2FA-SUCCESS] ✅ Le code est bon, le temps est bon. Génération du Token.`);
+    
     const userRole = (emp.role || "EMPLOYEE").toUpperCase();
     const { data: perms } = await supabase.from("role_permissions").select("*").eq("role_name", userRole).single();
 
-    // 5. NETTOYAGE DU CODE (Usage unique)
+    // Destruction du code en base pour interdire la réutilisation
     await supabase.from("app_users").update({ reset_code: null, reset_expires: null }).eq("id", user.id);
 
-    // 6. GÉNÉRATION DU TOKEN JWT FINAL
     const token = jwt.sign({
       id: user.id,
       emp_id: emp.id,
       role: userRole,
       permissions: perms || {}
-    }, JWT_SECRET, { expiresIn: "12h" });
+    }, process.env.JWT_SECRET, { expiresIn: "12h" });
 
     return res.json({
       status: "success",
@@ -164,11 +182,10 @@ router.post("/verify-2fa", async (req, res) => {
     });
 
   } catch (err) {
-    console.error(`[2FA-CRASH] 💥 Erreur:`, err.message);
-    return res.status(500).json({ status: "error", message: "Erreur technique serveur." });
+    console.error(`[2FA-CRASH] 💥 Erreur fatale :`, err);
+    return res.status(500).json({ status: "error", message: "Erreur interne du serveur." });
   }
 });
-
 
 
 
