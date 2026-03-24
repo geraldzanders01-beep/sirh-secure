@@ -162,10 +162,6 @@ async function sendPushNotification(userId, title, body, url = '/') {
 }
 
 
-
-
-const Jimp = require('jimp');
-
 async function addWatermark(buffer, gps, nomAgent) {
     try {
         // 1. Charger l'image
