@@ -163,31 +163,67 @@ router.all("/clock", async (req, res) => {
                     .select('id, check_in_time').eq('employee_id', emp.id).is('check_out_time', null)
                     .order('check_in_time', { ascending: false }).limit(1).maybeSingle();
 
-                if (lastVisit) {
+if (lastVisit) {
+                    console.log(`🎯 [DEBUG] Visite trouvée ID: ${lastVisit.id}. Clôture en cours...`);
+                    
                     const dur = Math.round((eventTime - new Date(lastVisit.check_in_time)) / 60000);
+                    
+                    // --- 💎 FIX CRITIQUE DES PRODUITS (Pour colonne text[]) ---
                     let productsArray = [];
                     try {
                         if (rawProducts) {
-                            const raw = (typeof rawProducts === 'string') ? JSON.parse(rawProducts) : rawProducts;
-                            productsArray = Array.isArray(raw) ? raw.map(p => (typeof p === 'string') ? p : (p.name || "Produit")) : [];
+                            // On décode si c'est une chaîne JSON (cas fréquent en HTTP)
+                            let raw = (typeof rawProducts === 'string') ? JSON.parse(rawProducts) : rawProducts;
+                            
+                            if (Array.isArray(raw)) {
+                                // On transforme tout en TEXTE PUR (strictement requis par text[] dans Supabase)
+                                productsArray = raw.map(p => {
+                                    if (typeof p === 'object' && p !== null) return String(p.name || p.NAME || "Article");
+                                    return String(p); 
+                                });
+                            }
                         }
-                    } catch(e) { productsArray = []; }
+                    } catch(e) { 
+                        console.error("⚠️ [ERREUR FORMAT PRODUITS] :", e.message);
+                        productsArray = []; 
+                    }
 
+                    // LOG DE VÉRIFICATION : À vérifier dans tes logs Render
+                    console.log(`📦 Produits reçus du tel :`, rawProducts);
+                    console.log(`✅ Tableau final envoyé à la DB :`, JSON.stringify(productsArray));
+
+                    // --- SÉCURISATION DES IDS (UUID) ---
                     const isValidUUID = (u) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(u);
                     
-                    await supabase.from('visit_reports').update({
+                    // On s'assure que si l'ID est invalide (ex: "autre"), on envoie NULL pour ne pas faire crash Supabase
+                    const cleanPrescripteurId = isValidUUID(prescripteur_id) ? prescripteur_id : null;
+
+                    // --- MISE À JOUR DE LA TABLE visit_reports ---
+                    const { error: updErr } = await supabase.from('visit_reports').update({
                         check_out_time: eventTime.toISOString(),
                         outcome: outcome || 'VU',
                         notes: report || '',
                         proof_url: proofUrl || null,
                         duration_minutes: dur > 0 ? dur : 1,
-                        presented_products: productsArray,
-                        prescripteur_id: isValidUUID(prescripteur_id) ? prescripteur_id : null,
-                        contact_nom_libre: contact_nom_libre || null
+                        presented_products: productsArray, // Ce tableau de strings ["QEV", "PRODUIT B"] est parfait
+                        prescripteur_id: cleanPrescripteurId,
+                        contact_nom_libre: (contact_nom_libre && contact_nom_libre !== 'undefined') ? contact_nom_libre : null
                     }).eq('id', lastVisit.id);
+
+                    if (updErr) {
+                        console.error("❌ [ERREUR SUPABASE] Échec de l'enregistrement du rapport :", updErr.message);
+                    } else {
+                        console.log("✨ [SUCCÈS] Rapport de visite mis à jour avec les produits.");
+                    }
+                } else {
+                    console.warn("⚠️ [ATTENTION] Aucune visite ouverte trouvée pour cet agent.");
                 }
-                if (isFinal) await supabase.from('employees').update({ statut: 'Actif' }).eq('id', emp.id);
-            }
+
+                // Si l'agent a coché "Clôturer la journée" ou si c'est un agent sédentaire (isFinal)
+                if (isFinal) {
+                    await supabase.from('employees').update({ statut: 'Actif' }).eq('id', emp.id);
+                }
+                
         } else {
             // Sédentaires : Update statut simple
             await supabase.from('employees').update({ statut: clockAction === 'CLOCK_IN' ? 'En Poste' : 'Actif' }).eq('id', emp.id);
