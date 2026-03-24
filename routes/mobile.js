@@ -63,20 +63,37 @@ router.all("/clock", async (req, res) => {
             return res.status(403).json({ error: "Votre journée est déjà clôturée." });
         }
 
-        // 5. TRAITEMENT DE LA PHOTO / PREUVE
+// 5. TRAITEMENT DE LA PHOTO / PREUVE (VERSION ANTI-FRAUDE WATERMARK)
         let proofUrl = null;
+        const { addWatermark } = require("../utils"); // Importation du moteur de marquage
+
         if (req.files && req.files.length > 0) {
             const file = req.files.find(f => f.fieldname === 'proof_photo');
             if (file) {
-                const fileName = `VISITE_ID${emp.id}_${Date.now()}.jpg`;                    
-                const { error: upErr } = await supabase.storage.from('documents').upload(fileName, file.buffer, { contentType: file.mimetype });
+                console.log(`📸 Marquage photo (Fichier) pour ${emp.nom}...`);
+                
+                // 💥 TATOUAGE DE L'IMAGE
+                const processedBuffer = await addWatermark(file.buffer, gps, emp.nom);
+                
+                const fileName = `VISITE_SECURE_ID${emp.id}_${Date.now()}.jpg`;                    
+                const { error: upErr } = await supabase.storage.from('documents')
+                    .upload(fileName, processedBuffer, { contentType: 'image/jpeg' });
+                
                 if (!upErr) proofUrl = supabase.storage.from('documents').getPublicUrl(fileName).data.publicUrl;
             }
-        } else if (req.body.proof_photo_base64) {
+        } 
+        else if (req.body.proof_photo_base64) {
+            console.log(`📸 Marquage photo (Base64) pour ${emp.nom}...`);
             const base64Data = req.body.proof_photo_base64.replace(/^data:image\/\w+;base64,/, "");
             const buffer = Buffer.from(base64Data, 'base64');
-            const fileName = `VISITE_JSON_ID${emp.id}_${Date.now()}.jpg`;
-            const { error: upErr } = await supabase.storage.from('documents').upload(fileName, buffer, { contentType: 'image/jpeg' });
+
+            // 💥 TATOUAGE DE L'IMAGE
+            const processedBuffer = await addWatermark(buffer, gps, emp.nom);
+
+            const fileName = `VISITE_SECURE_JSON_ID${emp.id}_${Date.now()}.jpg`;
+            const { error: upErr } = await supabase.storage.from('documents')
+                .upload(fileName, processedBuffer, { contentType: 'image/jpeg' });
+            
             if (!upErr) proofUrl = supabase.storage.from('documents').getPublicUrl(fileName).data.publicUrl;
         }
 
