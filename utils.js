@@ -164,29 +164,50 @@ async function sendPushNotification(userId, title, body, url = '/') {
 
 
 
+const Jimp = require('jimp');
+
 async function addWatermark(buffer, gps, nomAgent) {
     try {
+        // 1. Charger l'image
         const image = await Jimp.read(buffer);
-        const font = await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE); // Petite police blanche
         
-        const width = image.bitmap.width;
-        const height = image.bitmap.height;
-        const dateStr = new Date().toLocaleString('fr-FR', { timeZone: 'Africa/Porto-Novo' });
-        const text = `SIRH SECURE | ${nomAgent} | GPS: ${gps} | ${dateStr}`;
+        // 2. Préparer les textes (sécurité si données vides)
+        const name = (nomAgent || "Agent Inconnu").toUpperCase();
+        const coords = (gps && gps !== "0,0") ? `GPS: ${gps}` : "GPS NON DISPONIBLE";
+        const date = new Date().toLocaleString('fr-FR', { timeZone: 'Africa/Porto-Novo' });
+        
+        const watermarkText = `SIRH SECURE | ${name} | ${coords} | ${date}`;
 
-        // 1. Dessiner un bandeau noir semi-transparent en bas pour la lisibilité
-        const bannerHeight = 40;
-        new Jimp(width, bannerHeight, '#000000cc', (err, banner) => {
-            image.composite(banner, 0, height - bannerHeight);
-        });
+        // 3. Définir la taille du bandeau en fonction de l'image (5% de la hauteur)
+        const imgW = image.bitmap.width;
+        const imgH = image.bitmap.height;
+        const bannerH = Math.max(40, Math.round(imgH * 0.05)); 
 
-        // 2. Écrire le texte sur le bandeau
-        image.print(font, 15, height - 30, text);
+        // 4. Créer le bandeau de fond (Noir élégant, 70% opacité)
+        const banner = new Jimp(imgW, bannerH, '#000000b3');
 
-        return await image.getBufferAsync(Jimp.MIME_JPEG);
-    } catch (e) {
-        console.error("Erreur Watermark:", e);
-        return buffer; // En cas d'erreur, on rend l'image originale pour ne pas bloquer l'agent
+        // 5. Charger la police (S'adapte : petite si image étroite, normale sinon)
+        const font = (imgW < 600) ? Jimp.FONT_SANS_12_WHITE : Jimp.FONT_SANS_16_WHITE;
+        const loadedFont = await Jimp.loadFont(font);
+
+        // 6. Fusionner le tout
+        // On place le bandeau tout en bas
+        image.composite(banner, 0, imgH - bannerH);
+        
+        // On écrit le texte centré verticalement dans le bandeau
+        image.print(
+            loadedFont,
+            20, // Marge gauche
+            imgH - (bannerH / 2) - 8, // Centrage vertical approximatif
+            watermarkText
+        );
+
+        // 7. Retourner l'image traitée en JPEG (qualité 80% pour économiser du stockage)
+        return await image.quality(80).getBufferAsync(Jimp.MIME_JPEG);
+
+    } catch (error) {
+        console.error("❌ Echec Watermark, renvoi image brute :", error.message);
+        return buffer; // En cas de bug, on ne bloque pas l'agent, on envoie l'image sans texte
     }
 }
 
