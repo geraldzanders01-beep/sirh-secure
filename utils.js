@@ -1,6 +1,8 @@
 const axios = require("axios");
 const supabase = require("./supabaseClient");
 const webpush = require('web-push');
+const Jimp = require('jimp');
+
 
 
 // Fonction pour calculer la date de fin (Date début + nombre de jours)
@@ -161,6 +163,33 @@ async function sendPushNotification(userId, title, body, url = '/') {
 
 
 
+
+async function addWatermark(buffer, gps, nomAgent) {
+    try {
+        const image = await Jimp.read(buffer);
+        const font = await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE); // Petite police blanche
+        
+        const width = image.bitmap.width;
+        const height = image.bitmap.height;
+        const dateStr = new Date().toLocaleString('fr-FR', { timeZone: 'Africa/Porto-Novo' });
+        const text = `SIRH SECURE | ${nomAgent} | GPS: ${gps} | ${dateStr}`;
+
+        // 1. Dessiner un bandeau noir semi-transparent en bas pour la lisibilité
+        const bannerHeight = 40;
+        new Jimp(width, bannerHeight, '#000000cc', (err, banner) => {
+            image.composite(banner, 0, height - bannerHeight);
+        });
+
+        // 2. Écrire le texte sur le bandeau
+        image.print(font, 15, height - 30, text);
+
+        return await image.getBufferAsync(Jimp.MIME_JPEG);
+    } catch (e) {
+        console.error("Erreur Watermark:", e);
+        return buffer; // En cas d'erreur, on rend l'image originale pour ne pas bloquer l'agent
+    }
+}
+
 module.exports = {
   getEndDate,
   isTargetAuthorized,
@@ -169,5 +198,6 @@ module.exports = {
   sendEmailAPI,
   isModuleActive,
   sendPushNotification,
-  calculateAutoClose
+  calculateAutoClose,
+  addWatermark
 };
