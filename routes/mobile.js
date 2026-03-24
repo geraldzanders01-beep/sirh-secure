@@ -189,10 +189,31 @@ router.all("/clock", async (req, res) => {
 
                 await supabase.from('employees').update({ statut: 'En Poste' }).eq('id', emp.id);
             } 
-            else if (clockAction === 'CLOCK_OUT') {
-                console.log(`📝 Tentative de clôture de visite pour ${emp.nom}`);
+// 8. LOGIQUE VISITE (Si Mobile) - VERSION FINALISÉE ET SÉCURISÉE
+        if (isMobileAgent) {
+            if (clockAction === 'CLOCK_IN') {
+                console.log(`📝 [IN] Création rapport pour ${emp.nom} à ${detectedLocName}`);
+                
+                const { data: newVisit, error: visitErr } = await supabase.from('visit_reports').insert([{
+                    employee_id: emp.id, 
+                    check_in_time: eventTime.toISOString(),
+                    location_name: detectedLocName,
+                    location_id: (detectedLocId && detectedLocId !== 'undefined') ? detectedLocId : null,
+                    schedule_ref_id: (schedule_id && schedule_id !== 'undefined') ? schedule_id : null
+                }]).select();
 
-                // Recherche de la visite ouverte
+                if (visitErr) {
+                    console.error("❌ [ERREUR IN] Supabase a refusé la création :", visitErr.message);
+                } else {
+                    console.log("✅ [IN] Ligne créée dans visit_reports. ID:", newVisit[0].id);
+                }
+
+                await supabase.from('employees').update({ statut: 'En Poste' }).eq('id', emp.id);
+            } 
+            else if (clockAction === 'CLOCK_OUT') {
+                console.log(`📝 [OUT] Tentative de clôture pour ${emp.nom}`);
+
+                // 1. Recherche de la visite ouverte la plus récente
                 const { data: lastVisit, error: fetchErr } = await supabase.from('visit_reports')
                     .select('id, check_in_time')
                     .eq('employee_id', emp.id)
@@ -201,29 +222,43 @@ router.all("/clock", async (req, res) => {
                     .limit(1)
                     .maybeSingle();
 
+                if (fetchErr) console.error("❌ [ERREUR FETCH] Recherche visite impossible :", fetchErr.message);
+
                 if (lastVisit) {
                     const dur = Math.round((eventTime - new Date(lastVisit.check_in_time)) / 60000);
                     
+                    // --- NETTOYAGE DES PRODUITS (Crucial pour le type JSONB) ---
                     let productsArray = [];
                     try {
-                        productsArray = typeof rawProducts === 'string' ? JSON.parse(rawProducts) : (rawProducts || []);
-                    } catch(e) { productsArray = []; }
+                        if (rawProducts) {
+                            productsArray = (typeof rawProducts === 'string') ? JSON.parse(rawProducts) : rawProducts;
+                        }
+                    } catch(e) { console.error("⚠️ Erreur parse produits"); }
+                    if (!Array.isArray(productsArray)) productsArray = [];
 
+                    // --- NETTOYAGE DES IDS (Évite les chaînes "undefined" ou "null") ---
+                    const cleanPrescripteurId = (prescripteur_id && prescripteur_id !== 'autre' && prescripteur_id !== 'undefined' && prescripteur_id !== 'null') ? prescripteur_id : null;
+                    const cleanContactNom = (contact_nom_libre && contact_nom_libre !== 'undefined' && contact_nom_libre !== 'null') ? contact_nom_libre : null;
+
+                    // 2. Mise à jour de la ligne
                     const { error: updErr } = await supabase.from('visit_reports').update({
                         check_out_time: eventTime.toISOString(),
                         outcome: outcome || 'VU',
                         notes: report || '',
                         proof_url: proofUrl || null,
                         duration_minutes: dur > 0 ? dur : 1,
-                        presented_products: productsArray,
-                        prescripteur_id: (prescripteur_id && prescripteur_id !== 'autre') ? prescripteur_id : null,
-                        contact_nom_libre: contact_nom_libre || null
+                        presented_products: productsArray, // Doit être JSONB en base
+                        prescripteur_id: cleanPrescripteurId,
+                        contact_nom_libre: cleanContactNom
                     }).eq('id', lastVisit.id);
 
-                    if (updErr) console.error("❌ Erreur mise à jour visite (OUT):", updErr.message);
-                    else console.log("✅ Rapport de visite enregistré avec succès.");
+                    if (updErr) {
+                        console.error("❌ [ERREUR OUT] Supabase a refusé l'UPDATE :", updErr.message);
+                    } else {
+                        console.log("✅ [OUT] Rapport de visite mis à jour avec succès.");
+                    }
                 } else {
-                    console.warn("⚠️ Aucune visite ouverte trouvée. Vérifiez que le CLOCK_IN a fonctionné.");
+                    console.warn("⚠️ [OUT] Aucune visite ouverte trouvée. L'agent a-t-il bien fait une ENTRÉE ?");
                 }
 
                 if (isFinal) await supabase.from('employees').update({ statut: 'Actif' }).eq('id', emp.id);
