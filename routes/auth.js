@@ -78,37 +78,57 @@ router.all("/login", async (req, res) => {
 
 // 2. ROUTE DE VÉRIFICATION DU CODE 2FA
 router.post("/verify-2fa", async (req, res) => {
-  const { u, code } = req.body;
+  let { u, code } = req.body;
+  
+  const email = String(u).toLowerCase().trim();
+  const codeSaisi = String(code).trim(); // On force en texte
 
-  // 1. Vérification du code + Email + Expiration
+  console.log(`🔐 Tentative 2FA pour : ${email} avec le code : ${codeSaisi}`);
+
+  // 1. On cherche l'utilisateur par son email uniquement d'abord
   const { data: user, error } = await supabase
     .from("app_users")
-    .select("id, email, nom_complet, employees(id, role, photo_url, employee_type)")
-    .eq("email", u.toLowerCase().trim())
-    .eq("reset_code", code)
-    .gt("reset_expires", new Date().toISOString())
+    .select("id, email, reset_code, reset_expires, nom_complet, employees(id, role, photo_url, employee_type)")
+    .eq("email", email)
     .single();
 
   if (error || !user) {
-    return res.status(401).json({ status: "error", message: "Code incorrect ou expiré" });
+    console.error("❌ Utilisateur non trouvé lors du 2FA");
+    return res.status(401).json({ status: "error", message: "Session invalide" });
   }
 
+  // 2. VERIFICATION MANUELLE DU CODE (Plus fiable que .eq dans la requête)
+  const codeEnBase = String(user.reset_code).trim();
+  const expiration = new Date(user.reset_expires);
+  const maintenant = new Date();
+
+  if (codeSaisi !== codeEnBase) {
+    console.error(`❌ Code incorrect. Saisi: ${codeSaisi}, En base: ${codeEnBase}`);
+    return res.status(401).json({ status: "error", message: "Le code est incorrect" });
+  }
+
+  if (maintenant > expiration) {
+    console.error("❌ Code expiré");
+    return res.status(401).json({ status: "error", message: "Le code a expiré (10 min max)" });
+  }
+
+  // 3. TOUT EST OK -> RÉCUPÉRATION DES PERMISSIONS
   const emp = user.employees[0];
   const userRole = emp.role.toUpperCase();
-
-  // 2. Récupération des permissions réelles pour le token
   const { data: perms } = await supabase.from("role_permissions").select("*").eq("role_name", userRole).single();
 
-  // 3. Effacer le code utilisé (Sécurité à usage unique)
+  // 4. NETTOYAGE DU CODE (Usage unique)
   await supabase.from("app_users").update({ reset_code: null, reset_expires: null }).eq("id", user.id);
 
-  // 4. Génération du JWT Final
+  // 5. GÉNÉRATION DU TOKEN FINAL
   const token = jwt.sign({
     id: user.id,
     emp_id: emp.id,
     role: userRole,
     permissions: perms || {}
   }, process.env.JWT_SECRET, { expiresIn: "12h" });
+
+  console.log(`✅ 2FA réussi pour ${user.nom_complet}`);
 
   return res.json({
     status: "success",
@@ -120,6 +140,10 @@ router.post("/verify-2fa", async (req, res) => {
     permissions: perms || {}
   });
 });
+
+
+
+
 // A. DEMANDER UN CODE (VERSION SÉCURISÉE)
 router.all("/request-password-reset", async (req, res) => {
   const email = req.body.email ? req.body.email.toLowerCase().trim() : "";
