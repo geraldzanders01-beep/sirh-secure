@@ -75,13 +75,15 @@ if (!JWT_SECRET) {
 
 // --- MIDDLEWARE DE SÉCURITÉ JWT ---
 const authenticateToken = (req, res, next) => {
-  const publicPaths = [
+  const publicPaths =[
     "/login",
+    "/verify-2fa", 
     "/gatekeeper",
     "/ingest-candidate",
     "/request-password-reset",
     "/reset-password",
   ];
+
 
   const isPublic = publicPaths.some((path) => req.path.includes(path));
   if (isPublic) return next();
