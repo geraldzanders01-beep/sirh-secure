@@ -455,24 +455,36 @@ router.all("/read-config-salaries", async (req, res) => {
 
 
 
-// --- SAUVEGARDER UNE RÈGLE DE PAIE DYNAMIQUE ---
+// --- SAUVEGARDER UNE RÈGLE DE PAIE DYNAMIQUE ET CIBLÉE ---
 router.post("/save-payroll-rule", async (req, res) => {
     if (!checkPerm(req, "can_manage_config")) return res.status(403).json({ error: "Accès refusé" });
 
-    const { rule_name, condition_field, condition_operator, condition_value, action_type, action_value } = req.body;
+    const { 
+        rule_name, target_type, target_value, data_source, 
+        condition_operator, condition_value, action_type, action_value 
+    } = req.body;
 
     const { error } = await supabase.from('payroll_rules').insert([{
         rule_name,
-        condition_field,
-        condition_operator,
-        condition_value,
-        action_type,
-        action_value: parseFloat(action_value)
+        target_type,             // Ex: 'DEPARTMENT'
+        target_value,            // Ex: 'IT'
+        data_source,             // Ex: 'VISITS'
+        condition_field: data_source, // On copie la source dans le field pour rétrocompatibilité
+        condition_operator,      // Ex: '>'
+        condition_value,         // Ex: '50'
+        action_type,             // Ex: 'MULTIPLY'
+        action_value: parseFloat(action_value),
+        is_active: true
     }]);
 
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) {
+        console.error("Erreur insertion règle:", error);
+        return res.status(500).json({ error: error.message });
+    }
+    
     return res.json({ status: "success" });
 });
+
 
 // --- LISTER LES RÈGLES EXISTANTES ---
 router.get("/list-payroll-rules", async (req, res) => {
