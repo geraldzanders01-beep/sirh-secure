@@ -222,8 +222,8 @@ if (lastVisit) {
                 // Si l'agent a coché "Clôturer la journée" ou si c'est un agent sédentaire (isFinal)
                 if (isFinal) {
                     await supabase.from('employees').update({ statut: 'Actif' }).eq('id', emp.id);
-                }
-                
+                }   
+            } 
         } else {
             // Sédentaires : Update statut simple
             await supabase.from('employees').update({ statut: clockAction === 'CLOCK_IN' ? 'En Poste' : 'Actif' }).eq('id', emp.id);
@@ -1248,37 +1248,6 @@ router.all("/delete-visit-report", async (req, res) => {
   return res.json({ status: "success" });
 });
 
-router.all("/get-performance-report", async (req, res) => {
-  const { start_date, end_date } = req.query;
-
-  // On récupère la synthèse des visites groupées par employé et par lieu
-  const { data, error } = await supabase
-    .from("visit_reports")
-    .select("*, employees(nom, matricule), mobile_locations(name, zone_name)")
-    .gte("check_in_time", start_date)
-    .lte("check_in_time", end_date);
-
-  if (error) throw error;
-
-  // On transforme les données pour le tableau de bord du Boss
-  const stats = {};
-  data.forEach((v) => {
-    const empId = v.employee_id;
-    if (!stats[empId]) {
-      stats[empId] = {
-        nom: v.employees.nom,
-        matricule: v.employees.matricule,
-        total_visites: 0,
-        lieux: {},
-      };
-    }
-    stats[empId].total_visites++;
-    const locName = v.mobile_locations.name;
-    stats[empId].lieux[locName] = (stats[empId].lieux[locName] || 0) + 1;
-  });
-
-  return res.json(Object.values(stats));
-});
 
 
 
