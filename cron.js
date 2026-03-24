@@ -96,4 +96,66 @@ const startCronJobs = () => {
     });
 };
 
+
+// Tâche quotidienne à 08:00
+cron.schedule('0 8 * * *', async () => {
+    console.log("🤖 [ROBOT CONTRATS] Scan des échéances en cours...");
+
+    try {
+        // 1. Calcul des dates cibles
+        const today = new Date();
+        const in30Days = new Date(new Date().setDate(today.getDate() + 30)).toISOString().split('T')[0];
+        const in7Days = new Date(new Date().setDate(today.getDate() + 7)).toISOString().split('T')[0];
+
+        // 2. On récupère les employés dont le contrat finit exactement à ces dates
+        const { data: emps, error } = await supabase
+            .from('employees')
+            .select('id, nom, email, poste, date_fin_contrat, manager_id, user_associated_id')
+            .in('date_fin_contrat', [in30Days, in7Days])
+            .not('statut', 'ilike', '%Sortie%');
+
+        if (error) throw error;
+
+        for (const emp of emps) {
+            const daysLeft = (emp.date_fin_contrat === in30Days) ? 30 : 7;
+
+            // --- A. ENVOI EMAIL À L'EMPLOYÉ (Information) ---
+            const emailHtml = `
+            <div style="font-family: sans-serif; color: #1e293b; max-width: 500px; margin: auto; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden;">
+                <div style="background-color: #0f172a; padding: 25px; text-align: center;">
+                    <img src="https://cdn-icons-png.flaticon.com/512/9752/9752284.png" style="width: 50px;">
+                </div>
+                <div style="padding: 30px;">
+                    <h2 style="color: #0f172a;">Suivi de votre contrat</h2>
+                    <p>Bonjour <b>${emp.nom}</b>,</p>
+                    <p>Ce message automatique vous informe que votre contrat actuel arrive à échéance le <b>${new Date(emp.date_fin_contrat).toLocaleDateString('fr-FR')}</b> (dans ${daysLeft} jours).</p>
+                    <p style="color: #64748b; font-size: 14px;">Le département RH et votre responsable ont été informés pour préparer la suite de votre collaboration.</p>
+                </div>
+            </div>`;
+            
+            await sendEmailAPI(emp.email, "Information relative à votre contrat", emailHtml);
+
+            // --- B. NOTIFICATION PUSH AU SUPÉRIEUR (Action requise) ---
+            if (emp.manager_id) {
+                // On récupère l'ID utilisateur du manager pour lui envoyer le Push
+                const { data: manager } = await supabase
+                    .from('employees')
+                    .select('user_associated_id')
+                    .eq('id', emp.manager_id)
+                    .single();
+
+                if (manager && manager.user_associated_id) {
+                    const pushTitle = daysLeft === 30 ? "📋 Échéance Contrat" : "⚠️ URGENCE CONTRAT";
+                    const pushBody = `${emp.nom} (${emp.poste}) arrive en fin de contrat dans ${daysLeft} jours. Veuillez statuer sur le renouvellement.`;
+                    
+                    await sendPushNotification(manager.user_associated_id, pushTitle, pushBody, "/#employees");
+                }
+            }
+        }
+        console.log(`✅ [ROBOT CONTRATS] Scan terminé. ${emps.length} alertes envoyées.`);
+    } catch (err) {
+        console.error("❌ [ROBOT CONTRATS] Erreur :", err.message);
+    }
+});
+
 module.exports = startCronJobs;
