@@ -7,79 +7,90 @@ const JWT_SECRET = process.env.JWT_SECRET;
 
 // 1. LOGIN AVEC 2FA CONDITIONNEL
 router.all("/login", async (req, res) => {
-  const username = (req.body.u || req.query.u || "").toLowerCase().trim();
-  const password = req.body.p || req.query.p;
+  try {
+    const username = (req.body.u || req.query.u || "").toLowerCase().trim();
+    const password = req.body.p || req.query.p;
 
-  // 1. Récupération de l'utilisateur
-  const { data: user, error } = await supabase
-    .from("app_users")
-    .select("id, email, password, nom_complet, employees(id, role, statut, photo_url, employee_type)")
-    .eq("email", username)
-    .single();
+    const { data: user, error } = await supabase
+      .from("app_users")
+      .select("id, email, password, nom_complet, employees(id, role, statut, photo_url, employee_type)")
+      .eq("email", username)
+      .single();
 
-  if (error || !user || user.password !== password) {
-    return res.json({ status: "error", message: "Identifiants incorrects" });
+    if (error || !user || user.password !== password) {
+      return res.json({ status: "error", message: "Identifiants incorrects" });
+    }
+
+    const emp = user.employees && user.employees.length > 0 ? user.employees[0] : null;
+    const userRole = emp ? (emp.role || "EMPLOYEE").toUpperCase() : "EMPLOYEE";
+
+    // --- SÉCURITÉ : BLOCAGE DES SORTIES ---
+    if (emp && emp.statut && emp.statut.toLowerCase().includes("sortie")) {
+      return res.json({ status: "revoked", message: "Accès révoqué. Contactez la direction." });
+    }
+
+    // ============================================================
+    // 🔥 LOGIQUE 2FA POUR ADMIN & RH
+    // ============================================================
+    if (userRole === "ADMIN" || userRole === "RH") {
+      const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+      const expires = new Date(Date.now() + 10 * 60000).toISOString();
+
+      await supabase.from("app_users")
+        .update({ reset_code: otpCode, reset_expires: expires })
+        .eq("id", user.id);
+
+      const emailHtml = `
+      <div style="font-family: sans-serif; color: #1e293b; max-width: 500px; margin: auto; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden;">
+          <div style="background-color: #0f172a; padding: 20px; text-align: center;">
+              <img src="https://cdn-icons-png.flaticon.com/512/9752/9752284.png" style="width: 50px; height: 50px;">
+              <p style="color: #ffffff; margin: 5px 0 0 0; font-size: 14px; font-weight: bold; letter-spacing: 1px;">SÉCURITÉ SIRH</p>
+          </div>
+          <div style="padding: 30px; text-align: center;">
+              <h2 style="margin-top: 0;">Code de vérification</h2>
+              <p>Bonjour <b>${user.nom_complet}</b>,</p>
+              <p>Vous avez demandé la réinitialisation de votre mot de passe. Voici votre code sécurisé :</p>
+              <div style="background: #f1f5f9; padding: 20px; margin: 25px 0; font-size: 32px; font-weight: 900; letter-spacing: 10px; color: #2563eb; border-radius: 12px; border: 2px dashed #cbd5e1;">
+                  ${otpCode}
+              </div>
+              <p style="font-size: 12px; color: #94a3b8;">Ce code expirera dans 10 minutes.<br>Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.</p>
+          </div>
+      </div>`;
+
+      await sendEmailAPI(user.email, "Votre code de sécurité SIRH", emailHtml);
+      return res.json({ status: "require_2fa", email: user.email });
+    }
+
+    // --- POUR LES AUTRES (EMPLOYÉ SIMPLE) : GÉNÉRATION JWT DIRECTE ---
+    const token = jwt.sign({ 
+        id: user.id, 
+        emp_id: emp ? emp.id : null, 
+        role: userRole, 
+        permissions: {} 
+    }, JWT_SECRET, { expiresIn: "8h" });
+
+    return res.json({
+      status: "success",
+      token: token,
+      id: emp ? emp.id : null,
+      nom: user.nom_complet,
+      role: userRole,
+      employee_type: emp ? emp.employee_type : "OFFICE"
+    });
+  } catch (err) {
+    console.error("Login Crash:", err);
+    return res.status(500).json({ error: "Erreur serveur interne" });
   }
-
-  const emp = user.employees && user.employees.length > 0 ? user.employees[0] : null;
-  const userRole = emp ? (emp.role || "EMPLOYEE").toUpperCase() : "EMPLOYEE";
-
-  // --- SÉCURITÉ : BLOCAGE DES SORTIES ---
-  if (emp && emp.statut.toLowerCase().includes("sortie")) {
-    return res.json({ status: "revoked", message: "Accès révoqué. Contactez la direction." });
-  }
-
-  // ============================================================
-  // 🔥 LOGIQUE 2FA POUR ADMIN & RH
-  // ============================================================
-  if (userRole === "ADMIN" || userRole === "RH") {
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const expires = new Date(Date.now() + 10 * 60000).toISOString(); // Expire dans 10 min
-
-    // On stocke le code dans app_users (colonnes reset_code et reset_expires)
-    await supabase.from("app_users")
-      .update({ reset_code: otpCode, reset_expires: expires })
-      .eq("id", user.id);
-
-    // Email Premium Harmonisé
-    const emailHtml = `
-    <div style="font-family: sans-serif; color: #1e293b; max-width: 500px; margin: auto; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden;">
-        <div style="background-color: #0f172a; padding: 30px; text-align: center;">
-            <img src="https://cdn-icons-png.flaticon.com/512/9752/9752284.png" style="width: 60px;">
-            <h1 style="color: #ffffff; margin: 10px 0 0 0; font-size: 18px; letter-spacing: 2px;">SÉCURITÉ SIRH</h1>
-        </div>
-        <div style="padding: 40px; text-align: center;">
-            <h2 style="margin-top: 0; color: #0f172a;">Vérification de connexion</h2>
-            <p style="color: #64748b;">Un accès à privilèges élevés a été demandé pour votre compte. Utilisez le code ci-dessous pour valider votre identité :</p>
-            <div style="background: #f1f5f9; padding: 20px; margin: 30px 0; font-size: 32px; font-weight: 900; letter-spacing: 10px; color: #2563eb; border-radius: 12px; border: 2px dashed #cbd5e1; font-family: monospace;">
-                ${otpCode}
-            </div>
-            <p style="font-size: 12px; color: #94a3b8;">Ce code expirera dans 10 minutes. Si vous n'êtes pas à l'origine de cette demande, sécurisez votre compte immédiatement.</p>
-        </div>
-    </div>`;
-
-    await sendEmailAPI(user.email, "Votre code de sécurité SIRH", emailHtml);
-
-    return res.json({ status: "require_2fa", email: user.email });
-  }
-
-  // --- POUR LES AUTRES (EMPLOYÉ SIMPLE) : GÉNÉRATION JWT DIRECTE ---
-  const token = jwt.sign({ id: user.id, emp_id: emp.id, role: userRole, permissions: {} }, process.env.JWT_SECRET, { expiresIn: "8h" });
-
-  return res.json({
-    status: "success",
-    token: token,
-    id: emp.id,
-    nom: user.nom_complet,
-    role: userRole,
-    employee_type: emp.employee_type || "OFFICE"
-  });
 });
+
+
+
+
+
 
 // 2. ROUTE DE VÉRIFICATION DU CODE 2FA
 router.post("/verify-2fa", async (req, res) => {
   try {
-    // 1. EXTRACTION ET NETTOYAGE RIGOUREUX
     const email = String(req.body.u || "").toLowerCase().trim();
     const codeSaisi = String(req.body.code || "").trim();
 
@@ -89,7 +100,6 @@ router.post("/verify-2fa", async (req, res) => {
         return res.status(400).json({ status: "error", message: "Données manquantes" });
     }
 
-    // 2. RÉCUPÉRATION DE L'UTILISATEUR
     const { data: user, error } = await supabase
       .from("app_users")
       .select("id, email, reset_code, reset_expires, nom_complet, employees(id, role, photo_url, employee_type)")
@@ -97,65 +107,39 @@ router.post("/verify-2fa", async (req, res) => {
       .single();
 
     if (error || !user) {
-      console.error(`[2FA-ERROR] ❌ Utilisateur introuvable : ${email}`);
       return res.status(401).json({ status: "error", message: "Session expirée. Recommencez." });
     }
 
-    // 3. LOGS DE COMPARAISON (C'est ici que tu verras le bug sur Render)
-    // On utilise JSON.stringify pour voir s'il y a des espaces cachés ou des types différents
     const codeEnBase = user.reset_code ? String(user.reset_code).trim() : null;
     
-    console.log(`[2FA-CHECK] Comparaison :`);
-    console.log(`  > Saisi : "${codeSaisi}" (longueur: ${codeSaisi.length})`);
-    console.log(`  > Base  : "${codeEnBase}" (longueur: ${codeEnBase ? codeEnBase.length : 0})`);
-
-    // 4. VALIDATION DU CODE
     if (!codeEnBase || codeSaisi !== codeEnBase) {
-      console.error(`[2FA-FAIL] ❌ Code incorrect pour ${email}`);
       return res.status(401).json({ status: "error", message: "Le code de sécurité est incorrect." });
     }
 
-    // 5. VALIDATION DE L'EXPIRATION
     const maintenant = new Date();
     const expiration = new Date(user.reset_expires);
 
-    console.log(`[2FA-TIME] Maintenant : ${maintenant.toISOString()}`);
-    console.log(`[2FA-TIME] Expire le : ${expiration.toISOString()}`);
-
     if (maintenant > expiration) {
-      console.error(`[2FA-FAIL] ⏰ Code expiré pour ${email}`);
       return res.status(401).json({ status: "error", message: "Ce code a expiré (validité 10 min)." });
     }
 
-    // 6. TOUT EST OK -> RÉCUPÉRATION DES DROITS
     const emp = Array.isArray(user.employees) ? user.employees[0] : user.employees;
     
     if (!emp) {
-        console.error(`[2FA-ERROR] ❌ Aucun profil employé lié à ${email}`);
-        return res.status(401).json({ status: "error", message: "Compte incomplet. Contactez le RH." });
+        return res.status(401).json({ status: "error", message: "Compte incomplet." });
     }
 
     const userRole = (emp.role || "EMPLOYEE").toUpperCase();
-    const { data: perms } = await supabase
-        .from("role_permissions")
-        .select("*")
-        .eq("role_name", userRole)
-        .single();
+    const { data: perms } = await supabase.from("role_permissions").select("*").eq("role_name", userRole).single();
 
-    // 7. NETTOYAGE (Usage unique)
-    await supabase.from("app_users")
-        .update({ reset_code: null, reset_expires: null })
-        .eq("id", user.id);
+    await supabase.from("app_users").update({ reset_code: null, reset_expires: null }).eq("id", user.id);
 
-    // 8. GÉNÉRATION DU TOKEN JWT FINAL
     const token = jwt.sign({
       id: user.id,
       emp_id: emp.id,
       role: userRole,
       permissions: perms || {}
-    }, process.env.JWT_SECRET, { expiresIn: "12h" });
-
-    console.log(`[2FA-SUCCESS] ✅ Accès accordé à ${user.nom_complet} (${userRole})`);
+    }, JWT_SECRET, { expiresIn: "12h" });
 
     return res.json({
       status: "success",
@@ -168,19 +152,22 @@ router.post("/verify-2fa", async (req, res) => {
     });
 
   } catch (err) {
-    console.error(`[2FA-CRASH] 💥 Erreur critique :`, err.message);
+    console.error(`[2FA-CRASH] 💥 Erreur:`, err.message);
     return res.status(500).json({ status: "error", message: "Erreur technique serveur." });
   }
 });
+
+
+
+
 
 
 // A. DEMANDER UN CODE (VERSION SÉCURISÉE)
 router.all("/request-password-reset", async (req, res) => {
   const email = req.body.email ? req.body.email.toLowerCase().trim() : "";
   const code = Math.floor(100000 + Math.random() * 900000).toString();
-  const expires = new Date(Date.now() + 15 * 60000).toISOString(); // On réduit à 15 min (plus sûr)
+  const expires = new Date(Date.now() + 15 * 60000).toISOString();
 
-  // 1. On tente de mettre à jour l'utilisateur s'il existe
   const { data: user, error } = await supabase
     .from("app_users")
     .update({ reset_code: code, reset_expires: expires })
@@ -188,40 +175,41 @@ router.all("/request-password-reset", async (req, res) => {
     .select("nom_complet")
     .maybeSingle();
 
-  // 2. S'il existe, on envoie le mail
   if (user) {
-const html = `
-<div style="font-family: sans-serif; color: #1e293b; max-width: 500px; margin: auto; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden;">
-    <div style="background-color: #0f172a; padding: 20px; text-align: center;">
-        <img src="https://cdn-icons-png.flaticon.com/512/9752/9752284.png" style="width: 50px; height: 50px;">
-        <p style="color: #ffffff; margin: 5px 0 0 0; font-size: 14px; font-weight: bold; letter-spacing: 1px;">SÉCURITÉ SIRH</p>
-    </div>
-    <div style="padding: 30px; text-align: center;">
-        <h2 style="margin-top: 0;">Code de vérification</h2>
-        <p>Bonjour <b>${user.nom_complet}</b>,</p>
-        <p>Vous avez demandé la réinitialisation de votre mot de passe. Voici votre code sécurisé :</p>
-        
-        <div style="background: #f1f5f9; padding: 20px; margin: 25px 0; font-size: 32px; font-weight: 900; letter-spacing: 10px; color: #2563eb; border-radius: 12px; border: 2px dashed #cbd5e1;">
-            ${code}
-        </div>
-        
-        <p style="font-size: 12px; color: #94a3b8;">Ce code expirera dans 15 minutes.<br>Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.</p>
-    </div>
-</div>`;
-
+        const html = `
+        <div style="font-family: sans-serif; color: #1e293b; max-width: 500px; margin: auto; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden;">
+            <div style="background-color: #0f172a; padding: 20px; text-align: center;">
+                <img src="https://cdn-icons-png.flaticon.com/512/9752/9752284.png" style="width: 50px; height: 50px;">
+                <p style="color: #ffffff; margin: 5px 0 0 0; font-size: 14px; font-weight: bold; letter-spacing: 1px;">SÉCURITÉ SIRH</p>
+            </div>
+            <div style="padding: 30px; text-align: center;">
+                <h2 style="margin-top: 0;">Code de vérification</h2>
+                <p>Bonjour <b>${user.nom_complet}</b>,</p>
+                <p>Vous avez demandé la réinitialisation de votre mot de passe. Voici votre code sécurisé :</p>
+                
+                <div style="background: #f1f5f9; padding: 20px; margin: 25px 0; font-size: 32px; font-weight: 900; letter-spacing: 10px; color: #2563eb; border-radius: 12px; border: 2px dashed #cbd5e1;">
+                    ${code}
+                </div>
+                
+                <p style="font-size: 12px; color: #94a3b8;">Ce code expirera dans 15 minutes.<br>Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.</p>
+            </div>
+        </div>`;
     await sendEmailAPI(email, "Code de sécurité SIRH", html);
   }
 
-  // 3. ON RÉPOND TOUJOURS SUCCÈS (Pour brouiller les pistes des pirates)
   return res.json({ status: "success", message: "Procédure lancée." });
 });
 
-// B. VALIDER LE CHANGEMENT (VERSION BLINDÉE)
+
+
+
+
+
+// B. VALIDER LE CHANGEMENT
 router.all("/reset-password", async (req, res) => {
   const { email, code, newPassword } = req.body;
-  const cleanEmail = email.toLowerCase().trim();
+  const cleanEmail = (email || "").toLowerCase().trim();
 
-  // 1. Vérification stricte : Email + Code + Expiration
   const { data: user, error } = await supabase
     .from("app_users")
     .select("id")
@@ -234,26 +222,17 @@ router.all("/reset-password", async (req, res) => {
     return res.status(400).json({ error: "Code invalide ou expiré." });
   }
 
-  // 2. Mise à jour du mot de passe ET destruction du code
-  const { error: updateErr } = await supabase
-    .from("app_users")
-    .update({
+  await supabase.from("app_users").update({
       password: newPassword,
-      reset_code: null, // On efface le code pour qu'il ne resserve plus
-      reset_expires: null, // On efface l'expiration
-    })
-    .eq("id", user.id);
+      reset_code: null,
+      reset_expires: null,
+    }).eq("id", user.id);
 
-  if (updateErr) throw updateErr;
-
-  // 3. Log de sécurité
-  await supabase.from("logs").insert([
-    {
+  await supabase.from("logs").insert([{
       agent: "Système",
       action: "SÉCURITÉ",
       details: `Mot de passe réinitialisé pour : ${cleanEmail}`,
-    },
-  ]);
+    }]);
 
   return res.json({ status: "success" });
 });
