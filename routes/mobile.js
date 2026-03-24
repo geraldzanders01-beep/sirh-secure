@@ -210,7 +210,7 @@ router.all("/clock", async (req, res) => {
 
                 await supabase.from('employees').update({ statut: 'En Poste' }).eq('id', emp.id);
             } 
-            else if (clockAction === 'CLOCK_OUT') {
+          else if (clockAction === 'CLOCK_OUT') {
                 console.log(`📝 [OUT] Tentative de clôture pour ${emp.nom}`);
 
                 // 1. Recherche de la visite ouverte la plus récente
@@ -222,43 +222,52 @@ router.all("/clock", async (req, res) => {
                     .limit(1)
                     .maybeSingle();
 
-                if (fetchErr) console.error("❌ [ERREUR FETCH] Recherche visite impossible :", fetchErr.message);
+                if (fetchErr) console.error("❌ [ERREUR FETCH] :", fetchErr.message);
 
                 if (lastVisit) {
                     const dur = Math.round((eventTime - new Date(lastVisit.check_in_time)) / 60000);
                     
-                    // --- NETTOYAGE DES PRODUITS (Crucial pour le type JSONB) ---
+                    // --- 💥 FIX CRITIQUE : CONVERSION POUR TEXT[] 💥 ---
                     let productsArray = [];
                     try {
                         if (rawProducts) {
-                            productsArray = (typeof rawProducts === 'string') ? JSON.parse(rawProducts) : rawProducts;
+                            const raw = (typeof rawProducts === 'string') ? JSON.parse(rawProducts) : rawProducts;
+                            // Ta DB attend des textes simples. On extrait juste le NOM des produits.
+                            if (Array.isArray(raw)) {
+                                productsArray = raw.map(p => (typeof p === 'string') ? p : (p.name || p.NAME || "Produit"));
+                            }
                         }
-                    } catch(e) { console.error("⚠️ Erreur parse produits"); }
-                    if (!Array.isArray(productsArray)) productsArray = [];
+                    } catch(e) { console.error("⚠️ Erreur format produits"); }
 
-                    // --- NETTOYAGE DES IDS (Évite les chaînes "undefined" ou "null") ---
-                    const cleanPrescripteurId = (prescripteur_id && prescripteur_id !== 'autre' && prescripteur_id !== 'undefined' && prescripteur_id !== 'null') ? prescripteur_id : null;
-                    const cleanContactNom = (contact_nom_libre && contact_nom_libre !== 'undefined' && contact_nom_libre !== 'null') ? contact_nom_libre : null;
+                    // --- SÉCURISATION DES UUID (Si pas un UUID valide, on met null) ---
+                    const isValidUUID = (uuid) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uuid);
+                    
+                    const cleanPrescripteurId = isValidUUID(prescripteur_id) ? prescripteur_id : null;
+                    const cleanContactNom = (contact_nom_libre && contact_nom_libre !== 'undefined') ? contact_nom_libre : null;
 
-                    // 2. Mise à jour de la ligne
-                    const { error: updErr } = await supabase.from('visit_reports').update({
+                    // 2. Mise à jour de la ligne (Respect strict de ton schéma DB)
+                    const updatePayload = {
                         check_out_time: eventTime.toISOString(),
                         outcome: outcome || 'VU',
                         notes: report || '',
                         proof_url: proofUrl || null,
                         duration_minutes: dur > 0 ? dur : 1,
-                        presented_products: productsArray, // Doit être JSONB en base
+                        presented_products: productsArray, // ✅ Maintenant c'est un tableau de strings ["A", "B"]
                         prescripteur_id: cleanPrescripteurId,
                         contact_nom_libre: cleanContactNom
-                    }).eq('id', lastVisit.id);
+                    };
+
+                    const { error: updErr } = await supabase.from('visit_reports')
+                        .update(updatePayload)
+                        .eq('id', lastVisit.id);
 
                     if (updErr) {
-                        console.error("❌ [ERREUR OUT] Supabase a refusé l'UPDATE :", updErr.message);
+                        console.error("❌ [ERREUR DB] Supabase refuse l'UPDATE :", updErr.message);
                     } else {
-                        console.log("✅ [OUT] Rapport de visite mis à jour avec succès.");
+                        console.log(`✅ [SUCCÈS] Rapport ID ${lastVisit.id} mis à jour.`);
                     }
                 } else {
-                    console.warn("⚠️ [OUT] Aucune visite ouverte trouvée. L'agent a-t-il bien fait une ENTRÉE ?");
+                    console.warn("⚠️ [OUT] Aucune visite ouverte trouvée.");
                 }
 
                 if (isFinal) await supabase.from('employees').update({ statut: 'Actif' }).eq('id', emp.id);
